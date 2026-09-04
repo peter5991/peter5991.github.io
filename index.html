@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="format-detection" content="telephone=no">
-<title>Dr. 程平 / Dr. CHENG PING — 材料科学 × 人工智能</title>
+<title>程平 博士 / Dr. CHENG PING — 材料科学 × 人工智能</title>
 <style>
 /* ============ TOKENS ============ */
 :root{
@@ -380,7 +380,10 @@ section{position:relative;padding:0 56px 0 200px}
 .scene-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:56px}
 @media (max-width:820px){.scene-grid{grid-template-columns:1fr}}
 .scene-card{border:1px solid var(--line);background:var(--ink);position:relative}
+.scene-card.wide{grid-column:1/-1}
 .scene-card .frame{aspect-ratio:16/10;overflow:hidden;position:relative}
+.scene-card.wide .frame{aspect-ratio:21/9}
+@media (max-width:820px){.scene-card.wide .frame{aspect-ratio:16/10}}
 .scene-card iframe{
   width:100%;height:100%;border:0;display:block;
   opacity:0;transition:opacity .8s var(--ease-in);
@@ -392,6 +395,7 @@ section{position:relative;padding:0 56px 0 200px}
 }
 .scene-card .cap b{font-size:13px;color:var(--white);font-weight:600;letter-spacing:.05em}
 .scene-card .cap span{font-size:10px;color:var(--gray);letter-spacing:.15em}
+.scene-card .cap .cap-link{color:var(--phosphor)}
 .scene-hint{
   position:absolute;top:12px;right:12px;z-index:2;pointer-events:none;
   font-family:var(--mono);font-size:10px;letter-spacing:.15em;color:var(--phosphor);
@@ -499,7 +503,7 @@ footer{
   <section id="hero">
     <div class="hero-tag">&gt; hello_world —— 材料科学研究者 / PhD · MATERIALS × AI RESEARCHER<span class="blink">_</span></div>
     <h1 class="hero-name">
-      <span class="row"><span class="cn">Dr. 程平</span></span>
+      <span class="row"><span class="cn">程平 博士</span></span>
       <span class="row"><span class="en glitch" data-text="DR. CHENG PING">DR. CHENG PING</span></span>
       <span class="row"><span class="en">MATERIALS<span class="dot">.</span>MEET<span class="dot">.</span>AI</span></span>
     </h1>
@@ -671,29 +675,36 @@ footer{
         <span class="acc-num">D.03</span>
         <span class="acc-cap"><span class="v">新生档案管理系统</span><span class="t">新生档案管理系统 · 辅导员端</span><span class="tag">SCREEN ↗</span></span>
       </a>
-      <a class="acc-item" href="assets/screen-overview-v1.png" target="_blank" rel="noopener">
-        <img src="assets/screen-overview-v1.png" alt="废旧电池回收监管平台 · 县域总览">
+      <a class="acc-item" href="assets/screen-overview.png" target="_blank" rel="noopener">
+        <img src="assets/screen-overview.png" alt="废旧电池回收监管平台 · 县域总览">
         <span class="acc-num">D.04</span>
         <span class="acc-cap"><span class="v">回收平台 · 县域总览</span><span class="t">废旧电池回收智慧监管平台 · 县域总览</span><span class="tag">SCREEN ↗</span></span>
       </a>
-      <a class="acc-item" href="assets/screen-ai-test-v1.png" target="_blank" rel="noopener">
-        <img src="assets/screen-ai-test-v1.png" alt="AI 智能检测与分级">
+      <a class="acc-item" href="assets/screen-ai-test.png" target="_blank" rel="noopener">
+        <img src="assets/screen-ai-test.png" alt="AI 智能检测与分级">
         <span class="acc-num">D.05</span>
         <span class="acc-cap"><span class="v">AI 检测与分级</span><span class="t">AI 智能检测与分级</span><span class="tag">SCREEN ↗</span></span>
       </a>
-      <a class="acc-item" href="assets/screen-network-v1.png" target="_blank" rel="noopener">
-        <img src="assets/screen-network-v1.png" alt="智能回收网络监控">
+      <a class="acc-item" href="assets/screen-network.png" target="_blank" rel="noopener">
+        <img src="assets/screen-network.png" alt="智能回收网络监控">
         <span class="acc-num">D.06</span>
         <span class="acc-cap"><span class="v">智能回收网络</span><span class="t">智能回收网络监控</span><span class="tag">SCREEN ↗</span></span>
       </a>
-      <a class="acc-item" href="assets/screen-swap-v1.png" target="_blank" rel="noopener">
-        <img src="assets/screen-swap-v1.png" alt="智慧运维与换电服务">
+      <a class="acc-item" href="assets/screen-swap.png" target="_blank" rel="noopener">
+        <img src="assets/screen-swap.png" alt="智慧运维与换电服务">
         <span class="acc-num">D.07</span>
         <span class="acc-cap"><span class="v">运维与换电服务</span><span class="t">智慧运维与换电服务</span><span class="tag">SCREEN ↗</span></span>
       </a>
     </div>
 
     <div class="scene-grid">
+      <div class="scene-card wide reveal">
+        <div class="frame">
+          <span class="scene-hint">点击区县下钻 · 拖拽旋转 · 滚轮缩放</span>
+          <iframe data-src="scenes/wuhu-map.html" title="芜湖市 3D 地图 · 废旧电池回收网络" loading="lazy"></iframe>
+        </div>
+        <div class="cap"><b>芜湖 3D 地图 · 回收站点下钻</b><span>THREE.JS DRILL-DOWN MAP · <a class="cap-link" href="http://116.62.219.224:8091/#/portal" target="_blank" rel="noopener">完整平台 ↗</a></span></div>
+      </div>
       <div class="scene-card reveal">
         <div class="frame">
           <span class="scene-hint">拖拽旋转 · 滚轮缩放</span>
@@ -724,6 +735,7 @@ footer{
       </div>
       <div class="socials reveal">
         <a href="mailto:peter599177@gmail.com">PETER599177@GMAIL.COM <i>↗</i></a>
+        <a href="#" onclick="event.preventDefault();navigator.clipboard&&navigator.clipboard.writeText('ahcp19950707');const t=this.firstChild;t.textContent='微信号已复制 · COPIED ';setTimeout(()=>t.textContent='WECHAT · AHCP19950707 ',1600)" title="点击复制微信号 ahcp19950707">WECHAT · AHCP19950707 <i>⧉</i></a>
         <a href="#">GOOGLE SCHOLAR <i>↗</i></a>
         <a href="https://orcid.org/0000-0001-7111-1179" target="_blank" rel="noopener">ORCID <i>↗</i></a>
         <a href="#">RESEARCHGATE <i>↗</i></a>

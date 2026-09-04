@@ -11,7 +11,9 @@
 ├── assets/         # 项目截图与演示图片(PNG)
 └── scenes/         # 嵌入式演示场景
     ├── dojo.html
-    └── store.html
+    ├── store.html
+    ├── wuhu-map.html     # 芜湖市 3D 地图(回收站点下钻,three.js)
+    └── wuhu-map/         # 地图 GeoJSON 与地形纹理
 ```
 
 ## 本地预览
@@ -52,7 +54,7 @@ git push
 |---|---|
 | 修改简介 / 项目 / 论文 / 联系方式 | `index.html`(页内锚点:#about #skills #projects #papers #demos #contact) |
 | 更换 / 新增项目截图 | 替换或添加 `assets/*.png`,并同步 `index.html` 中的引用路径 |
-| 修改演示场景 | `scenes/dojo.html`、`scenes/store.html` |
+| 修改演示场景 | `scenes/dojo.html`、`scenes/store.html`、`scenes/wuhu-map.html` |
 
 > 注意:图片等资源一律使用**相对路径**(如 `assets/xxx.png`),不要使用绝对路径,以保证 GitHub Pages 下正常加载。
 

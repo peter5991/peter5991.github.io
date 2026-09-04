@@ -1,0 +1,2111 @@
+<!DOCTYPE html>
+<!--
+  SPDX-License-Identifier: GPL-3.0-or-later
+  Copyright (c) 2026 宋夏天Dazzle
+  作者全平台ID：宋夏天Dazzle；公众号：送你整个夏天
+  Source: https://github.com/songsummer920-dazzle/three-scope-map-skill
+
+  适配说明(个人电子简历主页 scenes/wuhu-map.html):
+  由 battery-recycle-demo 的 src/components/map/WuhuThreeMap.vue 移植为无框架单文件页。
+  仅保留 芜湖市(city:340200) → 区县(district) 两级下钻;回收站点/分拣中心叠加层
+  数据照抄该项目 src/mock/mock-data.json(network 命名空间,坐标为 0~1 相对市级边界)。
+  剥离:Vue 运行时、world/country/province 层级、南海线框、相机视角 localStorage 存储。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>芜湖市 3D 地图 · 废旧电池回收网络</title>
+<style>
+  html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#050807; }
+  body { font-family:'PingFang SC','Microsoft YaHei',sans-serif; }
+
+  .map-stage { position:fixed; inset:0; }
+  .map-host {
+    position:absolute; inset:0; overflow:visible;
+    filter: drop-shadow(0 0 18px var(--map-stage-shadow));
+    animation: mapStageIn 920ms cubic-bezier(0.16, 1, 0.3, 1) 80ms both;
+  }
+  .map-host canvas, .map-host .map-label-layer { position:absolute; inset:0; }
+  .map-host .map-label-layer { pointer-events:none; }
+
+  /* 下钻工具条 */
+  .map-host .map-drill-control {
+    position:absolute; left:50%; top:10px; z-index:3;
+    display:flex; align-items:center; gap:6px;
+    transform:translateX(-50%);
+    color:var(--map-drill-text-alpha);
+    font-size:12px; line-height:1; white-space:nowrap;
+    text-shadow:0 0 10px var(--map-drill-glow);
+    pointer-events:auto;
+  }
+  .map-host .map-drill-control button {
+    height:22px; border:1px solid var(--map-drill-border); border-radius:2px;
+    padding:0 8px; white-space:nowrap;
+    background:var(--map-drill-background); color:var(--map-drill-text);
+    font:inherit; cursor:pointer;
+    box-shadow:inset 0 0 14px var(--map-drill-box-inner), 0 0 12px var(--map-drill-box-outer);
+  }
+  .map-host .map-drill-control button:disabled { opacity:.35; cursor:default; }
+
+  /* 区县标签 */
+  .city-label-anchor { position:relative; width:0; height:0; }
+  .city-label {
+    position:absolute; left:0; bottom:0; box-sizing:border-box;
+    display:flex; align-items:center; justify-content:center;
+    width:var(--map-label-width, 51px); height:var(--map-label-height, 30.8px);
+    padding:0 var(--map-label-padding-x, 3.8px) var(--map-label-padding-bottom, 8.3px);
+    background-image:var(--map-label-background-image);
+    background-repeat:no-repeat; background-size:100% 100%;
+    color:var(--map-label-text);
+    font-size:var(--map-label-font-size, 8.7px);
+    line-height:var(--map-label-line-height, 12.2px);
+    font-weight:700; letter-spacing:0;
+    text-shadow:0 0 8px var(--map-label-text-glow);
+    opacity:.86; transform-origin:center bottom; transform:translateX(-50%);
+    transition:width 180ms ease, height 180ms ease, padding 180ms ease, font-size 180ms ease, opacity 180ms ease;
+    white-space:nowrap;
+  }
+  .city-label.is-selected {
+    width:var(--map-label-selected-width, 60.2px);
+    height:var(--map-label-selected-height, 36.3px);
+    padding:0 var(--map-label-selected-padding-x, 4.4px) var(--map-label-selected-padding-bottom, 9.7px);
+    font-size:var(--map-label-selected-font-size, 10.3px);
+    line-height:var(--map-label-selected-line-height, 14.4px);
+    opacity:1;
+  }
+  .city-label span { display:block; max-width:100%; overflow:hidden; text-align:center; text-overflow:ellipsis; }
+  .city-ripple {
+    position:absolute; left:0; top:4px; width:63px; height:25px;
+    border:1px solid var(--map-ripple-border); border-radius:50%;
+    background:radial-gradient(ellipse at center, var(--map-ripple-center), var(--map-ripple-middle) 55%, transparent 72%);
+    box-shadow:0 0 12px var(--map-ripple-glow);
+    transform:translate(-50%, -50%);
+    animation:city-ripple 9s ease-out infinite;
+    pointer-events:none;
+  }
+  .city-ripple.delay { animation-delay:4.5s; }
+  @keyframes city-ripple {
+    0% { opacity:.55; transform:translate(-50%, -50%) scale(.6); }
+    100% { opacity:0; transform:translate(-50%, -50%) scale(1.35); }
+  }
+  @keyframes mapStageIn {
+    from { opacity:0; transform:translateY(28px) scale(.96); filter:blur(7px) drop-shadow(0 0 0 transparent); }
+    to { opacity:1; transform:translateY(0) scale(1); filter:blur(0) drop-shadow(0 0 18px var(--map-stage-shadow)); }
+  }
+
+  /* 加载提示 */
+  .map-loading {
+    position:absolute; left:50%; top:50%; z-index:5;
+    transform:translate(-50%, -50%);
+    font-family:Consolas, monospace; font-size:12px; letter-spacing:.3em;
+    color:#00e5b0; text-shadow:0 0 12px rgba(0,229,176,.5);
+    transition:opacity .6s; pointer-events:none;
+  }
+  .map-loading.done { opacity:0; }
+  .map-loading.error { color:#ff4d5e; letter-spacing:.1em; }
+
+  /* 站点信息浮层 */
+  .map-tip {
+    position:absolute; z-index:6; display:none;
+    max-width:240px; padding:8px 12px;
+    background:rgba(4, 16, 11, .88); border:1px solid rgba(0,229,176,.4);
+    font-size:11px; line-height:1.7; color:#d8f3e8; white-space:nowrap;
+    pointer-events:none; box-shadow:0 0 16px rgba(0,229,176,.18);
+  }
+
+  /* 图例 */
+  .map-legend {
+    position:absolute; left:14px; bottom:12px; z-index:5;
+    font-size:11px; line-height:1.9; color:rgba(216,243,232,.75);
+    pointer-events:none; text-shadow:0 0 8px rgba(0,0,0,.8);
+  }
+  .map-legend i {
+    display:inline-block; width:8px; height:8px; border-radius:50%;
+    margin-right:6px; vertical-align:1px;
+  }
+  .map-legend .lg-center { background:#00e5b0; box-shadow:0 0 8px #00e5b0; }
+  .map-legend .lg-station { background:transparent; border:1px solid #00e5b0; box-shadow:0 0 6px rgba(0,229,176,.6); }
+
+  .map-hint {
+    position:absolute; right:14px; bottom:12px; z-index:5;
+    font-family:Consolas, monospace; font-size:10px; letter-spacing:.18em;
+    color:rgba(143,168,200,.6); pointer-events:none;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.176.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.176.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div class="map-stage" id="mapStage">
+  <div class="map-host" id="mapHost"></div>
+  <div class="map-loading" id="mapLoading">LOADING WUHU MAP ...</div>
+  <div class="map-tip" id="mapTip"></div>
+  <div class="map-legend">
+    <div><i class="lg-center"></i>县级分拣中心</div>
+    <div><i class="lg-station"></i>村级回收站点</div>
+  </div>
+  <div class="map-hint">点击区县下钻 · 拖拽旋转 · 滚轮缩放</div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { CSS2DObject, CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ThreeScopeMap attribution: 作者全平台ID：宋夏天Dazzle；公众号：送你整个夏天
+// Code-only attribution. Do not render it in the UI.
+
+/* ================= 主题(mapTheme.ts 内联,主色 #00e5b0) ================= */
+const MAP_THEME_PRIMARY = '#00e5b0';
+const LEGACY_THEME_PRIMARY = '#9fc53a';
+
+function normalizeHex(value) {
+  const normalized = value.trim().replace(/^#/, '');
+  if (/^[0-9a-f]{3}$/i.test(normalized)) {
+    return `#${normalized.split('').map((item) => item + item).join('').toLowerCase()}`;
+  }
+  if (!/^[0-9a-f]{6}$/i.test(normalized)) throw new Error(`Invalid map theme color: ${value}`);
+  return `#${normalized.toLowerCase()}`;
+}
+function hexToRgb(value) {
+  const hex = normalizeHex(value).slice(1);
+  return {
+    r: Number.parseInt(hex.slice(0, 2), 16),
+    g: Number.parseInt(hex.slice(2, 4), 16),
+    b: Number.parseInt(hex.slice(4, 6), 16),
+  };
+}
+function rgbToHex({ r, g, b }) {
+  const channel = (value) => Math.round(Math.max(0, Math.min(255, value))).toString(16).padStart(2, '0');
+  return `#${channel(r)}${channel(g)}${channel(b)}`;
+}
+function rgbToHsl({ r, g, b }) {
+  const red = r / 255, green = g / 255, blue = b / 255;
+  const max = Math.max(red, green, blue), min = Math.min(red, green, blue);
+  const delta = max - min;
+  let hue = 0;
+  if (delta !== 0) {
+    if (max === red) hue = ((green - blue) / delta) % 6;
+    else if (max === green) hue = (blue - red) / delta + 2;
+    else hue = (red - green) / delta + 4;
+    hue /= 6;
+    if (hue < 0) hue += 1;
+  }
+  const lightness = (max + min) / 2;
+  const saturation = delta === 0 ? 0 : delta / (1 - Math.abs(2 * lightness - 1));
+  return { h: hue, s: saturation, l: lightness };
+}
+function hslToRgb({ h, s, l }) {
+  const hue = ((h % 1) + 1) % 1;
+  const chroma = (1 - Math.abs(2 * l - 1)) * s;
+  const section = hue * 6;
+  const x = chroma * (1 - Math.abs((section % 2) - 1));
+  let red = 0, green = 0, blue = 0;
+  if (section < 1) [red, green] = [chroma, x];
+  else if (section < 2) [red, green] = [x, chroma];
+  else if (section < 3) [green, blue] = [chroma, x];
+  else if (section < 4) [green, blue] = [x, chroma];
+  else if (section < 5) [red, blue] = [x, chroma];
+  else [red, blue] = [chroma, x];
+  const match = l - chroma / 2;
+  return { r: (red + match) * 255, g: (green + match) * 255, b: (blue + match) * 255 };
+}
+function clamp(value) { return Math.max(0, Math.min(1, value)); }
+
+function deriveLegacyThemeColor(legacyValue) {
+  const source = normalizeHex(MAP_THEME_PRIMARY);
+  const legacySource = normalizeHex(LEGACY_THEME_PRIMARY);
+  const legacyRole = normalizeHex(legacyValue);
+  if (source === legacySource) return legacyRole;
+  const sourceHsl = rgbToHsl(hexToRgb(source));
+  const legacySourceHsl = rgbToHsl(hexToRgb(legacySource));
+  const roleHsl = rgbToHsl(hexToRgb(legacyRole));
+  return rgbToHex(hslToRgb({
+    h: roleHsl.h + sourceHsl.h - legacySourceHsl.h,
+    s: clamp(roleHsl.s + sourceHsl.s - legacySourceHsl.s),
+    l: clamp(roleHsl.l + sourceHsl.l - legacySourceHsl.l),
+  }));
+}
+function themeRgba(legacyValue, alpha) {
+  const { r, g, b } = hexToRgb(deriveLegacyThemeColor(legacyValue));
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+function createMapLabelBackgroundImage() {
+  const darkA = deriveLegacyThemeColor('#050706');
+  const darkB = deriveLegacyThemeColor('#020302');
+  const darkC = deriveLegacyThemeColor('#131b12');
+  const sheenA = deriveLegacyThemeColor('#0a0e0a');
+  const sheenB = deriveLegacyThemeColor('#151d13');
+  const pointer = deriveLegacyThemeColor('#e8ff4f');
+  const svg = `<svg width="136" height="82" viewBox="0 0 136 82" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M1.5 11.5C1.5 5.98 5.98 1.5 11.5 1.5H124.5C130.02 1.5 134.5 5.98 134.5 11.5V57.5C134.5 63.02 130.02 67.5 124.5 67.5H83.5L68 82L52.5 67.5H11.5C5.98 67.5 1.5 63.02 1.5 57.5V11.5Z" fill="url(#paint0_linear)" fill-opacity="0.92"/>
+    <path d="M1.5 11.5C1.5 5.98 5.98 1.5 11.5 1.5H124.5C130.02 1.5 134.5 5.98 134.5 11.5V57.5C134.5 63.02 130.02 67.5 124.5 67.5H83.5L68 82L52.5 67.5H11.5C5.98 67.5 1.5 63.02 1.5 57.5V11.5Z" stroke="url(#paint1_linear)" stroke-width="3"/>
+    <path d="M14 52H111L125 38V13C125 8.58 121.42 5 117 5H20C15.58 5 12 8.58 12 13V52H14Z" fill="black" fill-opacity="0.58"/>
+    <path d="M25 58H108L128 38V57C128 60.87 124.87 64 121 64H84L68 78L52 64H20L25 58Z" fill="url(#paint2_linear)" fill-opacity="0.52"/>
+    <path d="M54 67.5H82L68 81L54 67.5Z" fill="${pointer}"/>
+    <defs>
+      <linearGradient id="paint0_linear" x1="9" y1="5" x2="124" y2="72" gradientUnits="userSpaceOnUse">
+        <stop stop-color="${darkA}"/><stop offset="0.62" stop-color="${darkB}"/><stop offset="1" stop-color="${darkC}"/>
+      </linearGradient>
+      <linearGradient id="paint1_linear" x1="7" y1="2" x2="135" y2="65" gradientUnits="userSpaceOnUse">
+        <stop stop-color="white"/><stop offset="0.44" stop-color="white" stop-opacity="0.85"/><stop offset="0.73" stop-color="white" stop-opacity="0.25"/><stop offset="1" stop-color="white"/>
+      </linearGradient>
+      <linearGradient id="paint2_linear" x1="32" y1="53" x2="126" y2="66" gradientUnits="userSpaceOnUse">
+        <stop stop-color="${sheenA}" stop-opacity="0"/><stop offset="0.5" stop-color="${sheenB}" stop-opacity="0.7"/><stop offset="1" stop-color="white" stop-opacity="0.18"/>
+      </linearGradient>
+    </defs>
+  </svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+}
+
+const mapTheme = {
+  sourcePrimary: normalizeHex(MAP_THEME_PRIMARY),
+  accent: deriveLegacyThemeColor('#E8FF4F'),
+  accentSoft: deriveLegacyThemeColor('#D4F56A'),
+  flyHead: deriveLegacyThemeColor('#F6FFD9'),
+  sideMid: deriveLegacyThemeColor('#a8bc38'),
+  sideBottom: deriveLegacyThemeColor('#101304'),
+  ringDim: deriveLegacyThemeColor('#a4b83a'),
+  arcDim: deriveLegacyThemeColor('#b5ca40'),
+  mapBase: deriveLegacyThemeColor('#07100b'),
+  baseLine: deriveLegacyThemeColor('#24351d'),
+  hoverMid: deriveLegacyThemeColor('#b6c53d'),
+  hoverBottom: deriveLegacyThemeColor('#1a2105'),
+  surfaceBase: deriveLegacyThemeColor('#050b05'),
+  surfaceEmissive: deriveLegacyThemeColor('#0d1708'),
+  terrainColor: deriveLegacyThemeColor('#0a1607'),
+  terrainEmissive: deriveLegacyThemeColor('#101d08'),
+  ambientLight: deriveLegacyThemeColor('#baff78'),
+  directionalLight: deriveLegacyThemeColor('#f2ffb1'),
+  labelText: deriveLegacyThemeColor('#f2ffd6'),
+  drillText: deriveLegacyThemeColor('#e8ffca'),
+  chaseLight: '#ffffff',
+  css: {
+    stageShadow: themeRgba('#c7ff3d', 0.34),
+    drillText: themeRgba('#e8ffca', 0.86),
+    drillGlow: themeRgba('#e8ff4f', 0.42),
+    drillBorder: themeRgba('#d4f56a', 0.5),
+    drillBackground: themeRgba('#081709', 0.62),
+    drillBoxInner: themeRgba('#caff54', 0.18),
+    drillBoxOuter: themeRgba('#caff54', 0.14),
+    labelTextGlow: themeRgba('#ccff3d', 0.9),
+    rippleBorder: themeRgba('#e8ff4f', 0.54),
+    rippleCenter: themeRgba('#e8ff4f', 0.18),
+    rippleMiddle: themeRgba('#e8ff4f', 0.04),
+    rippleGlow: themeRgba('#e8ff4f', 0.22),
+  },
+};
+
+const mapThemeStyle = {
+  '--map-accent': mapTheme.accent,
+  '--map-accent-soft': mapTheme.accentSoft,
+  '--map-label-text': mapTheme.labelText,
+  '--map-drill-text': mapTheme.drillText,
+  '--map-stage-shadow': mapTheme.css.stageShadow,
+  '--map-drill-text-alpha': mapTheme.css.drillText,
+  '--map-drill-glow': mapTheme.css.drillGlow,
+  '--map-drill-border': mapTheme.css.drillBorder,
+  '--map-drill-background': mapTheme.css.drillBackground,
+  '--map-drill-box-inner': mapTheme.css.drillBoxInner,
+  '--map-drill-box-outer': mapTheme.css.drillBoxOuter,
+  '--map-label-text-glow': mapTheme.css.labelTextGlow,
+  '--map-label-background-image': createMapLabelBackgroundImage(),
+  '--map-ripple-border': mapTheme.css.rippleBorder,
+  '--map-ripple-center': mapTheme.css.rippleCenter,
+  '--map-ripple-middle': mapTheme.css.rippleMiddle,
+  '--map-ripple-glow': mapTheme.css.rippleGlow,
+};
+
+const stageEl = document.getElementById('mapStage');
+Object.entries(mapThemeStyle).forEach(([key, value]) => stageEl.style.setProperty(key, value));
+
+/* ================= 地形材质(mapTerrainMaterial.ts 内联) ================= */
+let terrainTextures;
+let terrainTexturesReady;
+
+function configureTexture(texture, isColorMap = false) {
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(2.8, 2.15);
+  texture.offset.set(0.07, 0.11);
+  texture.rotation = -0.08;
+  texture.center.set(0.5, 0.5);
+  texture.anisotropy = 8;
+  if (isColorMap) texture.colorSpace = THREE.SRGBColorSpace;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function getTerrainTextures() {
+  if (!terrainTextures) {
+    const loader = new THREE.TextureLoader();
+    let resolveReady;
+    let pendingTextures = 4;
+    terrainTexturesReady = new Promise((resolve) => { resolveReady = resolve; });
+    const markTextureReady = () => {
+      pendingTextures -= 1;
+      if (pendingTextures === 0 && terrainTextures && resolveReady) resolveReady(terrainTextures);
+    };
+    const loadTexture = (url, isColorMap = false) => configureTexture(
+      loader.load(url, markTextureReady, undefined, markTextureReady),
+      isColorMap,
+    );
+    terrainTextures = {
+      diffuseMap: loadTexture('./wuhu-map/textures/terrain-diffuse.jpg', true),
+      displacementMap: loadTexture('./wuhu-map/textures/terrain-height.jpg'),
+      normalMap: loadTexture('./wuhu-map/textures/terrain-normal.jpg'),
+      roughnessMap: loadTexture('./wuhu-map/textures/terrain-roughness.jpg'),
+    };
+  }
+  return terrainTextures;
+}
+async function waitForTerrainTexturesReady() {
+  const textures = getTerrainTextures();
+  await terrainTexturesReady;
+  return textures;
+}
+function createMapTerrainMaterial(config) {
+  const textures = getTerrainTextures();
+  const material = new THREE.MeshStandardMaterial({
+    color: mapTheme.terrainColor,
+    emissive: mapTheme.terrainEmissive,
+    emissiveIntensity: 0.12,
+    map: textures.diffuseMap,
+    displacementMap: textures.displacementMap,
+    displacementScale: config.elevationScale,
+    normalMap: textures.normalMap,
+    normalScale: new THREE.Vector2(config.normalStrength, config.normalStrength),
+    roughnessMap: textures.roughnessMap,
+    roughness: config.roughness,
+    metalness: 0.03,
+    transparent: true,
+    opacity: config.textureOpacity,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  material.userData.terrainConfig = { ...config };
+  return material;
+}
+
+/* ================= 地图数据(本地 GeoJSON,离线可用) ================= */
+const geoJsonCache = new Map();
+const pendingGeoJsonLoads = new Map();
+
+async function loadMapLevel(scope, code) {
+  const cacheKey = `${scope}:${code}`;
+  const cached = geoJsonCache.get(cacheKey);
+  if (cached) return cached;
+  const pending = pendingGeoJsonLoads.get(cacheKey);
+  if (pending) return pending;
+
+  const url = scope === 'city'
+    ? './wuhu-map/maps/wuhu.json'
+    : `./wuhu-map/maps/wuhu/${code}.json`;
+  const loadPromise = fetch(url)
+    .then((response) => {
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      return response.json();
+    })
+    .then((geoJson) => {
+      geoJsonCache.set(cacheKey, geoJson);
+      return geoJson;
+    })
+    .finally(() => pendingGeoJsonLoads.delete(cacheKey));
+  pendingGeoJsonLoads.set(cacheKey, loadPromise);
+  return loadPromise;
+}
+function prefetchMapLevel(scope, code) {
+  const cacheKey = `${scope}:${code}`;
+  if (geoJsonCache.has(cacheKey) || pendingGeoJsonLoads.has(cacheKey)) return;
+  loadMapLevel(scope, code).catch(() => undefined);
+}
+
+/* ================= 业务站点数据(照抄 battery-recycle-demo mock-data.json) ================= */
+const STATUS_MAP = { '在线': 'normal', '离线': 'offline', '繁忙': 'busy', '告警': 'warn' };
+const RAW_STATIONS = [
+  { name: '荆山村站', district: '镜湖区', status: '在线', kg: 128, x: 0.46, y: 0.34 },
+  { name: '方村站', district: '镜湖区', status: '在线', kg: 96, x: 0.55, y: 0.42 },
+  { name: '火龙岗村站', district: '弋江区', status: '在线', kg: 142, x: 0.44, y: 0.5 },
+  { name: '白马村站', district: '弋江区', status: '在线', kg: 118, x: 0.4, y: 0.56 },
+  { name: '石硊村站', district: '弋江区', status: '在线', kg: 84, x: 0.49, y: 0.55 },
+  { name: '沈巷村站', district: '鸠江区', status: '在线', kg: 156, x: 0.56, y: 0.18 },
+  { name: '二坝村站', district: '鸠江区', status: '在线', kg: 132, x: 0.5, y: 0.24 },
+  { name: '汤沟村站', district: '鸠江区', status: '在线', kg: 90, x: 0.62, y: 0.22 },
+  { name: '六郎村站', district: '湾沚区', status: '在线', kg: 108, x: 0.58, y: 0.58 },
+  { name: '陶辛村站', district: '湾沚区', status: '在线', kg: 122, x: 0.64, y: 0.66 },
+  { name: '红杨村站', district: '湾沚区', status: '在线', kg: 76, x: 0.7, y: 0.72 },
+  { name: '花桥村站', district: '湾沚区', status: '在线', kg: 64, x: 0.6, y: 0.74 },
+  { name: '孙村站', district: '繁昌区', status: '在线', kg: 138, x: 0.3, y: 0.66 },
+  { name: '荻港村站', district: '繁昌区', status: '在线', kg: 112, x: 0.36, y: 0.6 },
+  { name: '平铺村站', district: '繁昌区', status: '在线', kg: 72, x: 0.27, y: 0.76 },
+  { name: '峨山村站', district: '繁昌区', status: '在线', kg: 58, x: 0.38, y: 0.74 },
+  { name: '籍山村站', district: '南陵县', status: '在线', kg: 104, x: 0.48, y: 0.84 },
+  { name: '许镇村站', district: '南陵县', status: '在线', kg: 88, x: 0.56, y: 0.88 },
+  { name: '工山村站', district: '南陵县', status: '在线', kg: 62, x: 0.42, y: 0.9 },
+  { name: '高沟村站', district: '无为市', status: '在线', kg: 150, x: 0.14, y: 0.3 },
+  { name: '襄安村站', district: '无为市', status: '在线', kg: 136, x: 0.2, y: 0.4 },
+  { name: '开城村站', district: '无为市', status: '在线', kg: 120, x: 0.1, y: 0.48 },
+  { name: '王家庄村站', district: '无为市', status: '离线', kg: 0, x: 0.24, y: 0.22 },
+];
+const STATION_POINTS = RAW_STATIONS.map((s) => ({
+  x: s.x,
+  y: s.y,
+  status: STATUS_MAP[s.status] || 'normal',
+  label: `${s.district} ${s.name} · 今日回收 ${s.kg}kg · ${s.status}`,
+  size: 8,
+}));
+const CENTER_POINT = { x: 0.5, y: 0.38, label: '镜湖区县级分拣中心 · 今日分拣 1256.8kg · 运行中' };
+
+/* ================= 全局状态 ================= */
+const host = document.getElementById('mapHost');
+const loadingEl = document.getElementById('mapLoading');
+const tipEl = document.getElementById('mapTip');
+
+let renderer;
+let labelRenderer;
+let scene;
+let camera;
+let controls;
+let raf = 0;
+let resizeObserver;
+let mapGroup;
+let ringDecorGroup;
+let provinceChaseLine;
+let provinceChasePath;
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+const interactiveMeshes = [];
+const featureMeshes = new Map();
+const featureLiftGroups = new Map();
+const featureSideMaterials = new Map();
+const featureHighlightMaterials = new Map();
+const featureByName = new Map();
+const cityLabelElements = new Map();
+let projectedMapPolygonsCache;
+let provinceOuterEdgesCache;
+const flyLineMaterials = [];
+let hoveredFeature = '';
+let isDrilling = false;
+let hasRenderedStaticFrame = false;
+let currentState = { scope: 'city', regionName: '芜湖市', code: '340200', geoData: undefined };
+let geoData;
+let currentLabels = [];
+let drillStack = [];
+let drillControlEl;
+const mapWidth = 860;
+const mapHeight = 530;
+const mapPadding = 28;
+const coastalFragmentFeatureNames = new Set(); // 芜湖无沿海碎片区,保留模板机制但不启用名单
+const minCoastalPolygonArea = 0.25;
+const minInlandPolygonArea = 20;
+const provinceChaseZ = 44.25;
+const provinceChaseSegmentLength = 1.35;
+const provinceChaseRibbonWidth = 2.02;
+const provinceSilhouetteCellSize = 1.85;
+const mapTransitionDuration = 0.78;
+const labelReferenceDistance = 880;
+const cameraReferenceAspect = 16 / 9;
+let cityLabelPresentationKey = '';
+const cameraViewConfig = {
+  default: { fov: 31, position: [72, -760, 500], target: [-18, -42, 8] },
+  // 相机取景对齐 battery-recycle-demo 面板内构图
+  byScope: {
+    city: { fov: 31, position: [49, -540, 372], target: [-18, -10, 8] },
+    district: { fov: 31, position: [49, -540, 372], target: [-18, -10, 8] },
+  },
+};
+let lonMin = 0, lonMax = 0, latMin = 0, latMax = 0;
+let mapScale = 1, projectedOffsetX = 0, projectedOffsetY = 0;
+let mapBuildVersion = 0;
+let rendererWarmupVersion = 0;
+let hasUserAdjustedCamera = false;
+
+function waitForNextFrame() {
+  return new Promise((resolve) => { requestAnimationFrame(() => resolve()); });
+}
+function waitForPreloadSlice() {
+  return new Promise((resolve) => { globalThis.setTimeout(resolve, 0); });
+}
+function disposeObject3D(object) {
+  object.traverse((child) => {
+    if (!(child instanceof THREE.Mesh || child instanceof THREE.Line || child instanceof THREE.LineSegments)) return;
+    child.geometry?.dispose();
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    materials.forEach((material) => material?.dispose());
+  });
+}
+
+function fitBuiltInCameraViewToViewport(view) {
+  const { width, height } = getHostSize();
+  const aspect = width / height;
+  if (aspect >= cameraReferenceAspect) return view;
+  const distanceScale = Math.min(1.5, (cameraReferenceAspect / aspect) * 1.02);
+  const target = new THREE.Vector3(...view.target);
+  const position = new THREE.Vector3(...view.position);
+  position.sub(target).multiplyScalar(distanceScale).add(target);
+  return { ...view, position: [position.x, position.y, position.z] };
+}
+function resolveBuiltInCameraView(scope) {
+  return fitBuiltInCameraViewToViewport(cameraViewConfig.byScope?.[scope] ?? cameraViewConfig.default);
+}
+function getCurrentCameraView() {
+  if (!camera || !controls) return undefined;
+  return {
+    fov: camera.fov,
+    position: [camera.position.x, camera.position.y, camera.position.z],
+    target: [controls.target.x, controls.target.y, controls.target.z],
+  };
+}
+function applyCameraView(view) {
+  if (!camera) return;
+  camera.fov = view.fov;
+  camera.position.set(...view.position);
+  camera.updateProjectionMatrix();
+  if (controls) {
+    controls.target.set(...view.target);
+    controls.update();
+  } else {
+    camera.lookAt(...view.target);
+  }
+}
+
+function getCityLabelScale(cameraDistance) {
+  if (!controls) return 0.75;
+  if (cameraDistance <= labelReferenceDistance) {
+    const nearProgress = THREE.MathUtils.clamp(
+      (labelReferenceDistance - cameraDistance) / Math.max(labelReferenceDistance - controls.minDistance, 1), 0, 1);
+    return THREE.MathUtils.lerp(0.75, 1, THREE.MathUtils.smoothstep(nearProgress, 0, 1));
+  }
+  const farProgress = THREE.MathUtils.clamp(
+    (cameraDistance - labelReferenceDistance) / Math.max(controls.maxDistance - labelReferenceDistance, 1), 0, 1);
+  return THREE.MathUtils.lerp(0.75, 0.62, THREE.MathUtils.smoothstep(farProgress, 0, 1));
+}
+function updateCityLabelPresentation() {
+  if (!camera || !controls || !labelRenderer) return;
+  const cameraDistance = camera.position.distanceTo(controls.target);
+  const labelScale = getCityLabelScale(cameraDistance);
+  const nextPresentationKey = [labelScale.toFixed(3), currentState.scope].join(':');
+  if (nextPresentationKey === cityLabelPresentationKey) return;
+  cityLabelPresentationKey = nextPresentationKey;
+
+  const baseWidth = 68 * labelScale;
+  const baseHeight = 41 * labelScale;
+  const baseFontSize = THREE.MathUtils.lerp(8, 10, THREE.MathUtils.clamp((labelScale - 0.62) / 0.38, 0, 1));
+  const selectedScale = 1.18;
+  const style = labelRenderer.domElement.style;
+  style.setProperty('--map-label-width', `${baseWidth.toFixed(1)}px`);
+  style.setProperty('--map-label-height', `${baseHeight.toFixed(1)}px`);
+  style.setProperty('--map-label-padding-x', `${(5 * labelScale).toFixed(1)}px`);
+  style.setProperty('--map-label-padding-bottom', `${(11 * labelScale).toFixed(1)}px`);
+  style.setProperty('--map-label-font-size', `${baseFontSize.toFixed(1)}px`);
+  style.setProperty('--map-label-line-height', `${(baseFontSize * 1.4).toFixed(1)}px`);
+  style.setProperty('--map-label-selected-width', `${(baseWidth * selectedScale).toFixed(1)}px`);
+  style.setProperty('--map-label-selected-height', `${(baseHeight * selectedScale).toFixed(1)}px`);
+  style.setProperty('--map-label-selected-padding-x', `${(5 * labelScale * selectedScale).toFixed(1)}px`);
+  style.setProperty('--map-label-selected-padding-bottom', `${(11 * labelScale * selectedScale).toFixed(1)}px`);
+  style.setProperty('--map-label-selected-font-size', `${(baseFontSize * selectedScale).toFixed(1)}px`);
+  style.setProperty('--map-label-selected-line-height', `${(baseFontSize * selectedScale * 1.4).toFixed(1)}px`);
+}
+
+/* ================= 投影与几何 ================= */
+function getScopeTransform() {
+  return { position: new THREE.Vector3(-16, -42, -22), scale: 0.768 };
+}
+function forEachMaterial(object, callback) {
+  object.traverse((child) => {
+    if (!(child instanceof THREE.Mesh || child instanceof THREE.Line || child instanceof THREE.LineSegments)) return;
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    materials.forEach((material) => { if (material) callback(material); });
+  });
+}
+function primeGroupOpacity(group) {
+  forEachMaterial(group, (material) => {
+    material.userData.baseOpacity ??= material.opacity;
+    material.transparent = true;
+    material.opacity = 0;
+  });
+}
+function applyGroupTransition(group, time) {
+  const startedAt = group.userData.transitionStart;
+  if (!startedAt) return;
+  const progress = Math.min(1, (time - startedAt) / mapTransitionDuration);
+  const eased = 1 - (1 - progress) ** 3;
+  const baseScale = group.userData.baseScale;
+  const basePosition = group.userData.basePosition;
+  const introScale = THREE.MathUtils.lerp(baseScale * 0.84, baseScale, eased);
+  group.scale.set(introScale, introScale, introScale);
+  group.position.x = basePosition.x;
+  group.position.y = basePosition.y + THREE.MathUtils.lerp(28, 0, eased);
+  group.position.z = basePosition.z + THREE.MathUtils.lerp(-34, 0, eased);
+  forEachMaterial(group, (material) => {
+    material.opacity = (material.userData.baseOpacity ?? 1) * eased;
+  });
+  if (labelRenderer?.domElement) labelRenderer.domElement.style.opacity = String(eased);
+  if (progress >= 1) {
+    group.userData.transitionStart = undefined;
+    forEachMaterial(group, (material) => {
+      material.opacity = material.userData.baseOpacity ?? material.opacity;
+    });
+    if (labelRenderer?.domElement) labelRenderer.domElement.style.opacity = '1';
+  }
+}
+
+function getRenderableFeatures() { return geoData.features; }
+function toPolygons(feature) {
+  return feature.geometry.type === 'Polygon'
+    ? [feature.geometry.coordinates]
+    : feature.geometry.coordinates;
+}
+function updateProjectionFromGeoData() {
+  lonMin = Infinity; lonMax = -Infinity; latMin = Infinity; latMax = -Infinity;
+  getRenderableFeatures().forEach((feature) => {
+    toPolygons(feature).forEach((polygon) => {
+      polygon.forEach((ring) => {
+        ring.forEach((coord) => {
+          lonMin = Math.min(lonMin, coord[0]);
+          lonMax = Math.max(lonMax, coord[0]);
+          latMin = Math.min(latMin, coord[1]);
+          latMax = Math.max(latMax, coord[1]);
+        });
+      });
+    });
+  });
+  if (!Number.isFinite(lonMin) || !Number.isFinite(lonMax) || !Number.isFinite(latMin) || !Number.isFinite(latMax)) {
+    lonMin = 0; lonMax = 1; latMin = 0; latMax = 1;
+  }
+  mapScale = Math.min(
+    (mapWidth - mapPadding * 2) / Math.max(0.0001, lonMax - lonMin),
+    (mapHeight - mapPadding * 2) / Math.max(0.0001, latMax - latMin),
+  );
+  const projectedWidth = (lonMax - lonMin) * mapScale;
+  const projectedHeight = (latMax - latMin) * mapScale;
+  projectedOffsetX = (mapWidth - projectedWidth) / 2;
+  projectedOffsetY = (mapHeight - projectedHeight) / 2;
+}
+function projectCoord(coord) {
+  return [
+    projectedOffsetX + (coord[0] - lonMin) * mapScale,
+    projectedOffsetY + (latMax - coord[1]) * mapScale,
+  ];
+}
+function ringProjectedArea(ring) {
+  let area = 0;
+  for (let index = 0; index < ring.length; index++) {
+    const current = projectCoord(ring[index]);
+    const next = projectCoord(ring[(index + 1) % ring.length]);
+    area += current[0] * next[1] - next[0] * current[1];
+  }
+  return Math.abs(area / 2);
+}
+function simplifyRingForScope(ring) {
+  const maxPoints = currentState.scope === 'city' ? 360 : 420;
+  if (ring.length <= maxPoints) return ring;
+  const step = Math.ceil(ring.length / maxPoints);
+  const simplified = ring.filter((_, index) => index % step === 0);
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  if (last && first && (last[0] !== first[0] || last[1] !== first[1])) simplified.push(last);
+  return simplified.length >= 4 ? simplified : ring;
+}
+function toRenderablePolygons(feature) {
+  const featureName = getFeatureName(feature);
+  const minArea = coastalFragmentFeatureNames.has(featureName) ? minCoastalPolygonArea : minInlandPolygonArea;
+  return toPolygons(feature)
+    .filter((polygon) => ringProjectedArea(polygon[0]) >= minArea)
+    .map((polygon) => polygon.map((ring) => simplifyRingForScope(ring)));
+}
+function getFeatureName(feature) {
+  const props = feature.properties ?? {};
+  return String(props.fullname ?? props.name ?? props.ADMIN ?? props.NAME ?? props.name_en ?? props.adcode ?? props.code ?? '');
+}
+function getFeatureCode(feature) {
+  const props = feature.properties ?? {};
+  const code = props.adcode ?? props.code ?? props.id ?? props.ISO_A3 ?? props.ISO_A2 ?? props.ADM0_A3;
+  return code === undefined || code === null ? '' : String(code);
+}
+function featureCenter(feature) {
+  const center = feature.properties?.center;
+  if (Array.isArray(center) && typeof center[0] === 'number' && typeof center[1] === 'number') {
+    return [center[0], center[1]];
+  }
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  toPolygons(feature).forEach((polygon) => {
+    polygon.forEach((ring) => {
+      ring.forEach((coord) => {
+        minX = Math.min(minX, coord[0]);
+        maxX = Math.max(maxX, coord[0]);
+        minY = Math.min(minY, coord[1]);
+        maxY = Math.max(maxY, coord[1]);
+      });
+    });
+  });
+  if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) return [0, 0];
+  return [(minX + maxX) / 2, (minY + maxY) / 2];
+}
+function createLabelsForState() {
+  const labels = getRenderableFeatures()
+    .map((feature) => ({ name: getFeatureName(feature), coord: featureCenter(feature) }))
+    .filter((label) => !!label.name)
+    .slice(0, 60);
+  const rippleSourceName = getEffectSourceLabelName(labels);
+  return labels.map((label) => ({ ...label, ripple: label.name === rippleSourceName }));
+}
+function projectPoint(coord, z = 0) {
+  const point = projectCoord(coord);
+  return new THREE.Vector3(point[0] - mapWidth / 2, -(point[1] - mapHeight / 2), z);
+}
+function projectRing(ring) {
+  const points = ring.map((coord) => projectPoint(coord));
+  const last = points[points.length - 1];
+  const first = points[0];
+  if (last && first && (last.x !== first.x || last.y !== first.y)) points.push(first.clone());
+  return points;
+}
+function makeShape(rings) {
+  let outer = projectRing(rings[0]);
+  if (!THREE.ShapeUtils.isClockWise(outer.map((point) => new THREE.Vector2(point.x, point.y)))) {
+    outer = outer.reverse();
+  }
+  const start = outer[0];
+  const shape = new THREE.Shape();
+  shape.moveTo(start.x, start.y);
+  outer.slice(1).forEach((point) => shape.lineTo(point.x, point.y));
+  shape.closePath();
+  rings.slice(1).forEach((ring) => {
+    let holePoints = projectRing(ring);
+    if (THREE.ShapeUtils.isClockWise(holePoints.map((point) => new THREE.Vector2(point.x, point.y)))) {
+      holePoints = holePoints.reverse();
+    }
+    const holeStart = holePoints[0];
+    const hole = new THREE.Path();
+    hole.moveTo(holeStart.x, holeStart.y);
+    holePoints.slice(1).forEach((point) => hole.lineTo(point.x, point.y));
+    hole.closePath();
+    shape.holes.push(hole);
+  });
+  return shape;
+}
+function applyMapTerrainUv(geometry) {
+  const position = geometry.getAttribute('position');
+  const uv = new Float32Array(position.count * 2);
+  for (let index = 0; index < position.count; index++) {
+    const x = position.getX(index);
+    const y = position.getY(index);
+    uv[index * 2] = (x + mapWidth / 2) / mapWidth;
+    uv[index * 2 + 1] = (y + mapHeight / 2) / mapHeight;
+  }
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+function makeBoundarySegments(rings, z, material) {
+  const points = [];
+  rings.forEach((ring) => {
+    for (let index = 0; index < ring.length; index++) {
+      points.push(
+        projectPoint(ring[index], z),
+        projectPoint(ring[(index + 1) % ring.length], z),
+      );
+    }
+  });
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  const lines = new THREE.LineSegments(geometry, material);
+  lines.renderOrder = z > 40 ? 8 : 0;
+  return lines;
+}
+function coordKey(coord) { return `${coord[0].toFixed(6)},${coord[1].toFixed(6)}`; }
+function edgeKey(start, end) {
+  const a = coordKey(start);
+  const b = coordKey(end);
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+function pointInProjectedCoordinateRing(point, ring) {
+  let inside = false;
+  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index, index += 1) {
+    const currentPoint = ring[index];
+    const previousPoint = ring[previous];
+    const intersects = ((currentPoint[1] > point[1]) !== (previousPoint[1] > point[1]))
+      && (point[0] < ((previousPoint[0] - currentPoint[0]) * (point[1] - currentPoint[1]))
+        / (previousPoint[1] - currentPoint[1]) + currentPoint[0]);
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+function getProjectedMapPolygonLookup() {
+  if (projectedMapPolygonsCache) return projectedMapPolygonsCache;
+  projectedMapPolygonsCache = getRenderableFeatures().flatMap((feature) => (
+    toRenderablePolygons(feature).map((polygon) => {
+      const rings = polygon.map((ring) => ring.map((coord) => projectCoord(coord)));
+      const outer = rings[0];
+      return {
+        rings,
+        minX: Math.min(...outer.map((point) => point[0])),
+        minY: Math.min(...outer.map((point) => point[1])),
+        maxX: Math.max(...outer.map((point) => point[0])),
+        maxY: Math.max(...outer.map((point) => point[1])),
+      };
+    })
+  ));
+  return projectedMapPolygonsCache;
+}
+function pointInCurrentMap(point) {
+  return getProjectedMapPolygonLookup().some((polygon) => {
+    if (point[0] < polygon.minX || point[0] > polygon.maxX || point[1] < polygon.minY || point[1] > polygon.maxY) return false;
+    if (!pointInProjectedCoordinateRing(point, polygon.rings[0])) return false;
+    return !polygon.rings.slice(1).some((ring) => pointInProjectedCoordinateRing(point, ring));
+  });
+}
+function isProvinceExteriorEdge(start, end) {
+  const projectedStart = projectCoord(start);
+  const projectedEnd = projectCoord(end);
+  const dx = projectedEnd[0] - projectedStart[0];
+  const dy = projectedEnd[1] - projectedStart[1];
+  const length = Math.hypot(dx, dy);
+  if (length < 0.01) return false;
+  const midX = (projectedStart[0] + projectedEnd[0]) / 2;
+  const midY = (projectedStart[1] + projectedEnd[1]) / 2;
+  const normalX = -dy / length;
+  const normalY = dx / length;
+  const offset = 1.8;
+  const sideA = pointInCurrentMap([midX + normalX * offset, midY + normalY * offset]);
+  const sideB = pointInCurrentMap([midX - normalX * offset, midY - normalY * offset]);
+  return sideA !== sideB;
+}
+function getProvinceOuterEdges() {
+  if (provinceOuterEdgesCache) return provinceOuterEdgesCache;
+  const edges = new Map();
+  getRenderableFeatures().forEach((feature) => {
+    toRenderablePolygons(feature).forEach((polygon) => {
+      const ring = polygon[0];
+      for (let index = 0; index < ring.length; index++) {
+        const start = ring[index];
+        const end = ring[(index + 1) % ring.length];
+        const key = edgeKey(start, end);
+        const edge = edges.get(key);
+        if (edge) edge.count += 1;
+        else edges.set(key, { count: 1, start, end });
+      }
+    });
+  });
+  provinceOuterEdgesCache = [...edges.values()]
+    .filter((edge) => edge.count === 1 && isProvinceExteriorEdge(edge.start, edge.end));
+  return provinceOuterEdgesCache;
+}
+function getProvinceOuterLoops() {
+  const edges = getProvinceOuterEdges().map((edge) => ({ ...edge, used: false }));
+  const adjacency = new Map();
+  const addAdjacency = (key, index) => {
+    const list = adjacency.get(key) ?? [];
+    list.push(index);
+    adjacency.set(key, list);
+  };
+  edges.forEach((edge, index) => {
+    addAdjacency(coordKey(edge.start), index);
+    addAdjacency(coordKey(edge.end), index);
+  });
+  const loops = [];
+  edges.forEach((edge, edgeIndex) => {
+    if (edge.used) return;
+    edge.used = true;
+    const startKey = coordKey(edge.start);
+    let previousKey = startKey;
+    let currentKey = coordKey(edge.end);
+    const loop = [edge.start, edge.end];
+    while (currentKey !== startKey) {
+      const candidates = adjacency.get(currentKey) ?? [];
+      const nextIndex = candidates.find((candidateIndex) => {
+        if (edges[candidateIndex].used) return false;
+        const candidate = edges[candidateIndex];
+        const candidateStart = coordKey(candidate.start);
+        const candidateEnd = coordKey(candidate.end);
+        return candidateStart !== previousKey || candidateEnd !== previousKey;
+      });
+      if (nextIndex === undefined) break;
+      const nextEdge = edges[nextIndex];
+      nextEdge.used = true;
+      const nextPoint = coordKey(nextEdge.start) === currentKey ? nextEdge.end : nextEdge.start;
+      loop.push(nextPoint);
+      previousKey = currentKey;
+      currentKey = coordKey(nextPoint);
+    }
+    const last = loop[loop.length - 1];
+    if (coordKey(last) === startKey) loop.pop();
+    if (loop.length > 2) loops.push(loop);
+    if (!edges[edgeIndex].used) edges[edgeIndex].used = true;
+  });
+  return loops;
+}
+function createProvinceSilhouetteLoop() {
+  const cellSize = provinceSilhouetteCellSize;
+  const cols = Math.ceil(mapWidth / cellSize);
+  const rows = Math.ceil(mapHeight / cellSize);
+  const filled = new Uint8Array(cols * rows);
+  const isFilled = (x, y) => x >= 0 && x < cols && y >= 0 && y < rows && filled[y * cols + x] === 1;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const pointX = Math.min(mapWidth, (x + 0.5) * cellSize);
+      const pointY = Math.min(mapHeight, (y + 0.5) * cellSize);
+      if (pointInCurrentMap([pointX, pointY])) filled[y * cols + x] = 1;
+    }
+  }
+  const edges = [];
+  const pushEdge = (start, end) => edges.push({ start, end, used: false });
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      if (!isFilled(x, y)) continue;
+      if (!isFilled(x, y - 1)) pushEdge({ x, y }, { x: x + 1, y });
+      if (!isFilled(x + 1, y)) pushEdge({ x: x + 1, y }, { x: x + 1, y: y + 1 });
+      if (!isFilled(x, y + 1)) pushEdge({ x, y: y + 1 }, { x, y: y + 1 });
+      if (!isFilled(x - 1, y)) pushEdge({ x, y: y + 1 }, { x, y });
+    }
+  }
+  const pointKey = (point) => `${point.x},${point.y}`;
+  const adjacency = new Map();
+  edges.forEach((edge, index) => {
+    [edge.start, edge.end].forEach((point) => {
+      const key = pointKey(point);
+      const list = adjacency.get(key) ?? [];
+      list.push(index);
+      adjacency.set(key, list);
+    });
+  });
+  const loops = [];
+  edges.forEach((edge) => {
+    if (edge.used) return;
+    edge.used = true;
+    const startKey = pointKey(edge.start);
+    let previousKey = startKey;
+    let currentKey = pointKey(edge.end);
+    const loop = [edge.start, edge.end];
+    let guard = 0;
+    while (currentKey !== startKey && guard < edges.length) {
+      guard += 1;
+      const candidates = (adjacency.get(currentKey) ?? []).filter((candidateIndex) => !edges[candidateIndex].used);
+      const nextIndex = candidates.find((candidateIndex) => {
+        const candidate = edges[candidateIndex];
+        const otherPoint = pointKey(candidate.start) === currentKey ? candidate.end : candidate.start;
+        return pointKey(otherPoint) !== previousKey;
+      }) ?? candidates[0];
+      if (nextIndex === undefined) break;
+      const nextEdge = edges[nextIndex];
+      nextEdge.used = true;
+      const nextPoint = pointKey(nextEdge.start) === currentKey ? nextEdge.end : nextEdge.start;
+      loop.push(nextPoint);
+      previousKey = currentKey;
+      currentKey = pointKey(nextPoint);
+    }
+    if (loop.length > 4) loops.push(loop);
+  });
+  const gridLoopArea = (loop) => {
+    let area = 0;
+    for (let index = 0; index < loop.length; index++) {
+      const current = loop[index];
+      const next = loop[(index + 1) % loop.length];
+      area += current.x * next.y - next.x * current.y;
+    }
+    return Math.abs(area / 2);
+  };
+  const largestLoop = loops.sort((a, b) => gridLoopArea(b) - gridLoopArea(a))[0];
+  if (!largestLoop) return [];
+  return largestLoop.map((point) => {
+    const x = Math.min(mapWidth, point.x * cellSize);
+    const y = Math.min(mapHeight, point.y * cellSize);
+    return new THREE.Vector3(x - mapWidth / 2, -(y - mapHeight / 2), provinceChaseZ);
+  });
+}
+function smoothClosedPath(points, iterations = 2) {
+  let smoothed = points;
+  for (let iteration = 0; iteration < iterations; iteration++) {
+    const nextPoints = [];
+    smoothed.forEach((point, index) => {
+      const nextPoint = smoothed[(index + 1) % smoothed.length];
+      nextPoints.push(point.clone().lerp(nextPoint, 0.25));
+      nextPoints.push(point.clone().lerp(nextPoint, 0.75));
+    });
+    smoothed = nextPoints;
+  }
+  return smoothed;
+}
+function createProvinceChaseLight() {
+  const group = new THREE.Group();
+  const positions = [];
+  const vertexDistances = [];
+  const indices = [];
+  let totalDistance = 0;
+  const appendSegment = (start, end) => {
+    const length = start.distanceTo(end);
+    if (length < 0.01) return;
+    const normal = new THREE.Vector3(-(end.y - start.y), end.x - start.x, 0)
+      .normalize().multiplyScalar(provinceChaseRibbonWidth / 2);
+    const divisions = Math.max(1, Math.ceil(length / provinceChaseSegmentLength));
+    for (let step = 0; step < divisions; step++) {
+      const fromRatio = step / divisions;
+      const toRatio = (step + 1) / divisions;
+      const from = start.clone().lerp(end, fromRatio);
+      const to = start.clone().lerp(end, toRatio);
+      const fromDistance = totalDistance + length * fromRatio;
+      const toDistance = totalDistance + length * toRatio;
+      const offset = positions.length / 3;
+      [
+        from.clone().add(normal),
+        from.clone().sub(normal),
+        to.clone().add(normal),
+        to.clone().sub(normal),
+      ].forEach((point) => positions.push(point.x, point.y, point.z));
+      vertexDistances.push(fromDistance, fromDistance, toDistance, toDistance);
+      indices.push(offset, offset + 1, offset + 2, offset + 2, offset + 1, offset + 3);
+    }
+    totalDistance += length;
+  };
+  const provinceSilhouetteLoop = smoothClosedPath(createProvinceSilhouetteLoop(), 4);
+  if (provinceSilhouetteLoop.length > 4) {
+    provinceSilhouetteLoop.forEach((point, index) => {
+      const nextPoint = provinceSilhouetteLoop[(index + 1) % provinceSilhouetteLoop.length];
+      appendSegment(point, nextPoint);
+    });
+  } else {
+    const fallbackLoop = getProvinceOuterLoops()
+      .sort((a, b) => ringProjectedArea(b) - ringProjectedArea(a))[0];
+    fallbackLoop?.forEach((coord, index) => {
+      const nextCoord = fallbackLoop[(index + 1) % fallbackLoop.length];
+      appendSegment(projectPoint(coord, provinceChaseZ), projectPoint(nextCoord, provinceChaseZ));
+    });
+  }
+  if (!positions.length || totalDistance <= 0) return group;
+  provinceChasePath = {
+    distances: new Float32Array(vertexDistances),
+    total: totalDistance,
+    tailLength: Math.max(100, totalDistance * 0.07),
+  };
+  const alphas = new Float32Array(vertexDistances.length);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('alpha', new THREE.BufferAttribute(alphas, 1));
+  geometry.setIndex(indices);
+  const material = new THREE.ShaderMaterial({
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthTest: false,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    uniforms: { color: { value: new THREE.Color(mapTheme.chaseLight) } },
+    vertexShader: `
+      attribute float alpha;
+      varying float vAlpha;
+      void main() {
+        vAlpha = alpha;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 color;
+      varying float vAlpha;
+      void main() {
+        gl_FragColor = vec4(color, vAlpha);
+      }
+    `,
+  });
+  provinceChaseLine = new THREE.Mesh(geometry, material);
+  provinceChaseLine.renderOrder = 20;
+  group.add(provinceChaseLine);
+  return group;
+}
+function updateProvinceChaseLight(time) {
+  if (!provinceChasePath || !provinceChaseLine) return;
+  const alphaAttribute = provinceChaseLine.geometry.getAttribute('alpha');
+  const chaseSpeed = 230;
+  const headDistance = (time * chaseSpeed) % provinceChasePath.total;
+  for (let index = 0; index < provinceChasePath.distances.length; index++) {
+    const vertexDistance = provinceChasePath.distances[index];
+    const distanceBehindHead = (headDistance - vertexDistance + provinceChasePath.total) % provinceChasePath.total;
+    if (distanceBehindHead > provinceChasePath.tailLength) {
+      alphaAttribute.setX(index, 0);
+    } else {
+      const headRatio = 1 - distanceBehindHead / provinceChasePath.tailLength;
+      alphaAttribute.setX(index, Math.pow(headRatio, 1.65));
+    }
+  }
+  alphaAttribute.needsUpdate = true;
+}
+function createProvinceOutlineSegments(z, material, renderOrder) {
+  const points = [];
+  getProvinceOuterEdges().forEach((edge) => {
+    points.push(projectPoint(edge.start, z), projectPoint(edge.end, z));
+  });
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  const line = new THREE.LineSegments(geometry, material);
+  line.renderOrder = renderOrder;
+  return line;
+}
+function hashString(value) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index++) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash);
+}
+function getEffectSourceLabelName(labels = currentLabels) {
+  if (currentState.scope === 'city') {
+    if (!labels.length) return undefined;
+    return labels[hashString(currentState.code || currentState.regionName) % labels.length]?.name;
+  }
+  return undefined;
+}
+function getFlyLineSourceLabel() {
+  if (currentState.scope !== 'city') return undefined;
+  const sourceName = getEffectSourceLabelName();
+  return currentLabels.find((label) => label.name === sourceName);
+}
+function getFlyLineTargets(source) {
+  return currentLabels.filter((label) => label.name !== source.name);
+}
+function createFlyLines() {
+  const group = new THREE.Group();
+  const sourceLabel = getFlyLineSourceLabel();
+  if (!sourceLabel) return group;
+  const flyLineTargets = getFlyLineTargets(sourceLabel);
+  if (!flyLineTargets.length) return group;
+  const lineZ = 70;
+  const sourcePoint = projectPoint(sourceLabel.coord, lineZ);
+  const baseMaterial = new THREE.LineBasicMaterial({
+    color: mapTheme.accent,
+    transparent: true,
+    opacity: 0.2,
+    blending: THREE.AdditiveBlending,
+    depthTest: false,
+    depthWrite: false,
+  });
+  flyLineTargets.forEach((targetLabel, index) => {
+    const targetPoint = projectPoint(targetLabel.coord, lineZ);
+    const distance = sourcePoint.distanceTo(targetPoint);
+    const midPoint = sourcePoint.clone().lerp(targetPoint, 0.5);
+    midPoint.z += Math.max(28, distance * 0.15);
+    const curve = new THREE.QuadraticBezierCurve3(sourcePoint, midPoint, targetPoint);
+    const points = curve.getPoints(88);
+    const baseLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), baseMaterial);
+    baseLine.renderOrder = 15;
+    group.add(baseLine);
+    const flowGeometry = new THREE.BufferGeometry().setFromPoints(points);
+    const progress = new Float32Array(points.length);
+    points.forEach((_, pointIndex) => { progress[pointIndex] = pointIndex / (points.length - 1); });
+    flowGeometry.setAttribute('progress', new THREE.BufferAttribute(progress, 1));
+    const flowMaterial = new THREE.ShaderMaterial({
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthTest: false,
+      depthWrite: false,
+      uniforms: {
+        uTime: { value: 0 },
+        uDelay: { value: index * 0.047 },
+        uSpeed: { value: 0.3 },
+        uColor: { value: new THREE.Color(mapTheme.flyHead) },
+      },
+      vertexShader: `
+        attribute float progress;
+        varying float vProgress;
+        void main() {
+          vProgress = progress;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform float uDelay;
+        uniform float uSpeed;
+        uniform vec3 uColor;
+        varying float vProgress;
+        void main() {
+          float head = fract(uTime * uSpeed + uDelay);
+          float d = head - vProgress;
+          if (d < 0.0) d += 1.0;
+          float body = smoothstep(0.24, 0.0, d);
+          float core = smoothstep(0.035, 0.0, d);
+          float alpha = body * 0.72 + core * 0.5;
+          gl_FragColor = vec4(uColor, alpha);
+        }
+      `,
+    });
+    flyLineMaterials.push(flowMaterial);
+    const flowLine = new THREE.Line(flowGeometry, flowMaterial);
+    flowLine.renderOrder = 16;
+    group.add(flowLine);
+  });
+  return group;
+}
+function createProvinceSideWalls(material) {
+  const topZ = 44;
+  const bottomZ = 24;
+  const positions = [];
+  const indices = [];
+  getProvinceOuterEdges().forEach((edge) => {
+    const topStart = projectPoint(edge.start, topZ);
+    const topEnd = projectPoint(edge.end, topZ);
+    const bottomEnd = projectPoint(edge.end, bottomZ);
+    const bottomStart = projectPoint(edge.start, bottomZ);
+    const offset = positions.length / 3;
+    [topStart, topEnd, bottomEnd, bottomStart].forEach((point) => positions.push(point.x, point.y, point.z));
+    indices.push(offset, offset + 1, offset + 2, offset, offset + 2, offset + 3);
+  });
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.renderOrder = 2;
+  return mesh;
+}
+function createPolygonSideWalls(polygon, material) {
+  const topZ = 44;
+  const bottomZ = 24;
+  const positions = [];
+  const indices = [];
+  polygon.forEach((ring) => {
+    for (let index = 0; index < ring.length; index++) {
+      const start = ring[index];
+      const end = ring[(index + 1) % ring.length];
+      const topStart = projectPoint(start, topZ);
+      const topEnd = projectPoint(end, topZ);
+      const bottomEnd = projectPoint(end, bottomZ);
+      const bottomStart = projectPoint(start, bottomZ);
+      const offset = positions.length / 3;
+      [topStart, topEnd, bottomEnd, bottomStart].forEach((point) => positions.push(point.x, point.y, point.z));
+      indices.push(offset, offset + 1, offset + 2, offset, offset + 2, offset + 3);
+    }
+  });
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.renderOrder = 6;
+  return mesh;
+}
+function createSideGradientMaterial(alpha = 0.86, topZ = 44, bottomZ = 24) {
+  return new THREE.ShaderMaterial({
+    transparent: true,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.NormalBlending,
+    uniforms: {
+      topColor: { value: new THREE.Color(mapTheme.accent) },
+      midColor: { value: new THREE.Color(mapTheme.sideMid) },
+      bottomColor: { value: new THREE.Color(mapTheme.sideBottom) },
+      alpha: { value: alpha },
+      topZ: { value: topZ },
+      bottomZ: { value: bottomZ },
+    },
+    vertexShader: `
+      uniform float topZ;
+      uniform float bottomZ;
+      varying float vDepth;
+      void main() {
+        vDepth = clamp((position.z - bottomZ) / max(0.001, topZ - bottomZ), 0.0, 1.0);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 topColor;
+      uniform vec3 midColor;
+      uniform vec3 bottomColor;
+      uniform float alpha;
+      varying float vDepth;
+      void main() {
+        vec3 lower = mix(bottomColor, midColor, smoothstep(0.0, 0.24, vDepth));
+        vec3 color = mix(lower, topColor, smoothstep(0.34, 1.0, vDepth));
+        float edgeGlow = smoothstep(0.48, 1.0, vDepth);
+        gl_FragColor = vec4(color + edgeGlow * topColor * 0.24, alpha * (0.46 + vDepth * 0.54));
+      }
+    `,
+  });
+}
+function createArc(radius, start, end, z, material) {
+  const points = [];
+  const steps = 72;
+  for (let i = 0; i <= steps; i++) {
+    const angle = start + ((end - start) * i) / steps;
+    points.push(new THREE.Vector3(Math.cos(angle) * radius, Math.sin(angle) * radius, z));
+  }
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  const line = new THREE.Line(geometry, material);
+  line.renderOrder = -3;
+  return line;
+}
+function createRotatingRingDecor() {
+  const plate = new THREE.Group();
+  plate.position.set(0, 0, 14);
+  plate.scale.set(0.9, 0.9, 0.9);
+  plate.renderOrder = -3;
+  const rotor = new THREE.Group();
+  plate.add(rotor);
+  ringDecorGroup = rotor;
+  const softRing = new THREE.Mesh(
+    new THREE.RingGeometry(356, 362, 192),
+    new THREE.MeshBasicMaterial({
+      color: mapTheme.accent, transparent: true, opacity: 0.055,
+      blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthTest: true, depthWrite: false,
+    }),
+  );
+  softRing.renderOrder = -3;
+  rotor.add(softRing);
+  const innerSoftRing = new THREE.Mesh(
+    new THREE.RingGeometry(244, 248, 160),
+    new THREE.MeshBasicMaterial({
+      color: mapTheme.ringDim, transparent: true, opacity: 0.035,
+      blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthTest: true, depthWrite: false,
+    }),
+  );
+  innerSoftRing.renderOrder = -3;
+  rotor.add(innerSoftRing);
+  const arcMaterial = new THREE.LineBasicMaterial({
+    color: mapTheme.accent, transparent: true, opacity: 0.24,
+    depthTest: true, depthWrite: false,
+  });
+  const dimArcMaterial = new THREE.LineBasicMaterial({
+    color: mapTheme.arcDim, transparent: true, opacity: 0.15,
+    depthTest: true, depthWrite: false,
+  });
+  const arcSpecs = [
+    [0.1, 0.92, 390, arcMaterial],
+    [1.42, 2.04, 390, dimArcMaterial],
+    [2.56, 3.3, 390, arcMaterial],
+    [4.1, 4.82, 390, dimArcMaterial],
+    [5.22, 5.9, 390, arcMaterial],
+    [0.72, 1.34, 316, dimArcMaterial],
+    [2.12, 2.78, 316, arcMaterial],
+    [3.56, 4.2, 316, dimArcMaterial],
+    [5.02, 5.58, 316, arcMaterial],
+    [0.18, 0.62, 252, dimArcMaterial],
+    [3.18, 3.76, 252, arcMaterial],
+  ];
+  arcSpecs.forEach(([start, end, radius, material]) => {
+    rotor.add(createArc(radius, start, end, 2, material));
+  });
+  const tickMaterial = new THREE.LineBasicMaterial({
+    color: mapTheme.accent, transparent: true, opacity: 0.18,
+    depthTest: true, depthWrite: false,
+  });
+  for (let i = 0; i < 48; i++) {
+    if (i % 4 === 0) continue;
+    const angle = (Math.PI * 2 * i) / 48;
+    const inner = 344;
+    const outer = i % 2 === 0 ? 370 : 362;
+    const points = [
+      new THREE.Vector3(Math.cos(angle) * inner, Math.sin(angle) * inner, 3),
+      new THREE.Vector3(Math.cos(angle) * outer, Math.sin(angle) * outer, 3),
+    ];
+    const tick = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), tickMaterial);
+    tick.renderOrder = -3;
+    rotor.add(tick);
+  }
+  return plate;
+}
+
+/* ================= 地图构建 ================= */
+async function createMap() {
+  const group = new THREE.Group();
+  projectedMapPolygonsCache = undefined;
+  provinceOuterEdgesCache = undefined;
+  interactiveMeshes.length = 0;
+  featureMeshes.clear();
+  featureLiftGroups.clear();
+  featureSideMaterials.clear();
+  featureHighlightMaterials.clear();
+  featureByName.clear();
+  cityLabelElements.clear();
+  flyLineMaterials.length = 0;
+  ringDecorGroup = undefined;
+  provinceChaseLine = undefined;
+  provinceChasePath = undefined;
+  group.rotation.x = 0;
+  group.rotation.z = -0.09;
+  const transform = getScopeTransform();
+  group.position.copy(transform.position);
+  const scopeScale = transform.scale;
+  group.scale.set(scopeScale, scopeScale, scopeScale);
+  group.userData.basePosition = transform.position.clone();
+  group.userData.baseScale = scopeScale;
+
+  const geoBaseMaterial = new THREE.MeshBasicMaterial({
+    color: mapTheme.mapBase, transparent: true, opacity: 0.68,
+    side: THREE.DoubleSide, depthWrite: false,
+  });
+  const topMaterial = createMapTerrainMaterial({
+    elevationScale: 7.2,
+    normalStrength: 1,
+    roughness: 0.94,
+    textureOpacity: 0.9,
+  });
+  topMaterial.alphaTest = 0.02;
+  topMaterial.needsUpdate = true;
+  const sideMaterial = createSideGradientMaterial();
+  const topGlowMaterial = new THREE.MeshBasicMaterial({
+    color: mapTheme.accent, transparent: true, opacity: 0.045,
+    blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthTest: false, depthWrite: false,
+  });
+  const highlightMaterial = new THREE.MeshBasicMaterial({
+    color: mapTheme.accent, transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthTest: false, depthWrite: false,
+  });
+  const lineMaterial = new THREE.LineBasicMaterial({
+    color: mapTheme.accent, transparent: true, opacity: 0.46, depthTest: false, depthWrite: false,
+  });
+  const provinceOutlineMaterial = new THREE.LineBasicMaterial({
+    color: mapTheme.accentSoft, transparent: true, opacity: 0.82,
+    blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false,
+  });
+  const bottomOutlineMaterial = new THREE.LineBasicMaterial({
+    color: mapTheme.accentSoft, transparent: true, opacity: 0.62,
+    blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false,
+  });
+  const geoBaseLineMaterial = new THREE.LineBasicMaterial({
+    color: mapTheme.baseLine, transparent: true, opacity: 0.54, depthTest: false, depthWrite: false,
+  });
+
+  const renderableFeatures = getRenderableFeatures();
+  for (let featureIndex = 0; featureIndex < renderableFeatures.length; featureIndex += 1) {
+    const feature = renderableFeatures[featureIndex];
+    const featureName = getFeatureName(feature);
+    if (featureName) featureByName.set(featureName, feature);
+    const renderablePolygons = toRenderablePolygons(feature);
+    if (!renderablePolygons.length) continue;
+    const featureGroup = new THREE.Group();
+    featureGroup.userData.featureName = featureName;
+    featureGroup.userData.baseZ = 0;
+    featureGroup.userData.targetZ = 0;
+    group.add(featureGroup);
+    featureLiftGroups.set(featureName, [featureGroup]);
+
+    const shapes = renderablePolygons.map((polygon) => makeShape(polygon));
+    const featureRings = renderablePolygons.flat();
+
+    const geoBase = new THREE.Mesh(new THREE.ShapeGeometry(shapes), geoBaseMaterial);
+    geoBase.position.z = 20;
+    featureGroup.add(geoBase);
+    featureGroup.add(makeBoundarySegments(featureRings, 21, geoBaseLineMaterial));
+
+    const liftSideMaterial = createSideGradientMaterial(0);
+    featureGroup.add(createPolygonSideWalls(featureRings, liftSideMaterial));
+    featureSideMaterials.set(featureName, [liftSideMaterial]);
+
+    const topGeometry = applyMapTerrainUv(new THREE.ShapeGeometry(shapes));
+    const mesh = new THREE.Mesh(topGeometry, topMaterial.clone());
+    mesh.position.z = 44;
+    mesh.userData.featureName = featureName;
+    mesh.userData.featureCode = getFeatureCode(feature);
+    mesh.userData.baseZ = 44;
+    featureGroup.add(mesh);
+    interactiveMeshes.push(mesh);
+    featureMeshes.set(featureName, [mesh]);
+
+    const topGlow = new THREE.Mesh(new THREE.ShapeGeometry(shapes), topGlowMaterial);
+    topGlow.position.z = 48;
+    featureGroup.add(topGlow);
+
+    const highlightInstanceMaterial = highlightMaterial.clone();
+    highlightInstanceMaterial.userData.targetOpacity = 0;
+    const highlightMesh = new THREE.Mesh(new THREE.ShapeGeometry(shapes), highlightInstanceMaterial);
+    highlightMesh.position.z = 52;
+    highlightMesh.renderOrder = 7;
+    featureGroup.add(highlightMesh);
+    featureHighlightMaterials.set(featureName, [highlightInstanceMaterial]);
+
+    featureGroup.add(makeBoundarySegments(featureRings, 44, lineMaterial));
+    if (featureIndex % 2 === 1) await waitForNextFrame();
+  }
+
+  await waitForNextFrame();
+  group.add(createProvinceSideWalls(sideMaterial));
+  group.add(createProvinceOutlineSegments(44, provinceOutlineMaterial, 9));
+  group.add(createProvinceOutlineSegments(24, bottomOutlineMaterial, 1));
+  await waitForNextFrame();
+  group.add(createProvinceChaseLight());
+  await waitForNextFrame();
+  group.add(createFlyLines());
+  group.add(createRotatingRingDecor());
+  primeGroupOpacity(group);
+  return group;
+}
+
+/* ================= 区县标签 ================= */
+// 芜湖城区三区(镜湖/弋江/鸠江)行政中心几乎重合,标签完全堆叠;
+// 按名配置场景单位偏移(+x 东 / +y 北),把三张标签扇形展开,气泡指针仍大致指向本区
+const cityLabelOffsetByName = {
+  镜湖区: [-105, 20],
+  鸠江区: [40, 60],
+  弋江区: [-15, -80],
+};
+function createCityMarkers(group) {
+  currentLabels.forEach((city) => {
+    const anchorPoint = projectPoint(city.coord, 58);
+    const labelOffset = cityLabelOffsetByName[city.name];
+    if (labelOffset) {
+      anchorPoint.x += labelOffset[0];
+      anchorPoint.y += labelOffset[1];
+    }
+    const labelAnchor = document.createElement('div');
+    labelAnchor.className = 'city-label-anchor';
+    const labelEl = document.createElement('div');
+    labelEl.className = 'city-label';
+    if (city.ripple) {
+      labelEl.classList.add('is-jinhua');
+      const rippleEl = document.createElement('div');
+      rippleEl.className = 'city-ripple';
+      labelAnchor.appendChild(rippleEl);
+      const rippleDelayEl = document.createElement('div');
+      rippleDelayEl.className = 'city-ripple delay';
+      labelAnchor.appendChild(rippleDelayEl);
+    }
+    labelEl.innerHTML = `<span>${city.name}</span>`;
+    labelAnchor.appendChild(labelEl);
+    cityLabelElements.set(city.name, labelEl);
+    const label = new CSS2DObject(labelAnchor);
+    label.position.copy(anchorPoint);
+    group.add(label);
+  });
+  cityLabelPresentationKey = '';
+  updateCityLabelPresentation();
+}
+
+/* ================= 业务站点叠加层 ================= */
+let stationGroup;
+const stationHitMeshes = [];
+const stationPulseRings = [];
+const stationStatusColors = {
+  normal: '#00e5b0',
+  busy: '#1e9fff',
+  offline: '#8fa8c8',
+  warn: '#ff4d5e',
+};
+
+// 业务点位 0~1 相对坐标固定映射到「市级」边界(与 mock 坐标系约定一致),
+// 下钻到区县后按当前层级真实边界过滤,避免点位随区县边界重投影而错位散布
+let cityGeoBounds;
+function getCityGeoBounds() {
+  if (!cityGeoBounds) {
+    const bounds = { lonMin: Infinity, lonMax: -Infinity, latMin: Infinity, latMax: -Infinity };
+    geoJsonCache.get('city:340200').features.forEach((feature) => {
+      toPolygons(feature).forEach((polygon) => {
+        polygon.forEach((ring) => {
+          ring.forEach(([lon, lat]) => {
+            bounds.lonMin = Math.min(bounds.lonMin, lon);
+            bounds.lonMax = Math.max(bounds.lonMax, lon);
+            bounds.latMin = Math.min(bounds.latMin, lat);
+            bounds.latMax = Math.max(bounds.latMax, lat);
+          });
+        });
+      });
+    });
+    cityGeoBounds = bounds;
+  }
+  return cityGeoBounds;
+}
+function pointInRing([x, y], ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+function isCoordInCurrentGeoData(coord) {
+  return geoData.features.some((feature) =>
+    toPolygons(feature).some((polygon) =>
+      pointInRing(coord, polygon[0]) && !polygon.slice(1).some((hole) => pointInRing(coord, hole)),
+    ),
+  );
+}
+function relToGeoCoord(point) {
+  const bounds = getCityGeoBounds();
+  return [
+    bounds.lonMin + point.x * (bounds.lonMax - bounds.lonMin),
+    bounds.latMax - point.y * (bounds.latMax - bounds.latMin),
+  ];
+}
+function clearStationMarkers() {
+  if (stationGroup && mapGroup) {
+    mapGroup.remove(stationGroup);
+    disposeObject3D(stationGroup);
+  }
+  stationGroup = undefined;
+  stationHitMeshes.length = 0;
+  stationPulseRings.length = 0;
+}
+function createStationMarkers() {
+  if (!mapGroup) return;
+  clearStationMarkers();
+  const group = new THREE.Group();
+  const inCurrentBounds = (p) => {
+    const [lon, lat] = relToGeoCoord(p);
+    if (lon < lonMin || lon > lonMax || lat < latMin || lat > latMax) return false;
+    return isCoordInCurrentGeoData([lon, lat]);
+  };
+  const addMarker = (p, isCenter = false) => {
+    if (!inCurrentBounds(p)) return;
+    const base = projectPoint(relToGeoCoord(p), 52);
+    const color = isCenter
+      ? stationStatusColors.normal
+      : stationStatusColors[p.status] ?? stationStatusColors.normal;
+    const radius = isCenter ? 13 : Math.max(4, (p.size ?? 8) * 0.62);
+    const dot = new THREE.Mesh(
+      new THREE.CircleGeometry(radius * 0.52, 24),
+      new THREE.MeshBasicMaterial({
+        color, transparent: true, opacity: 0.95,
+        blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false,
+      }),
+    );
+    dot.position.copy(base);
+    dot.renderOrder = 18;
+    dot.userData.station = p;
+    stationHitMeshes.push(dot);
+    group.add(dot);
+
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(radius * 0.8, radius, 32),
+      new THREE.MeshBasicMaterial({
+        color, transparent: true, opacity: 0.7,
+        blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+      }),
+    );
+    ring.position.copy(base);
+    ring.renderOrder = 17;
+    ring.userData.phase = Math.abs(base.x * 0.13 + base.y * 0.07) % 1;
+    stationPulseRings.push(ring);
+    group.add(ring);
+
+    if (isCenter) {
+      const outer = new THREE.Mesh(
+        new THREE.RingGeometry(radius * 1.35, radius * 1.5, 40),
+        new THREE.MeshBasicMaterial({
+          color, transparent: true, opacity: 0.5,
+          blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+        }),
+      );
+      outer.position.copy(base);
+      outer.renderOrder = 17;
+      group.add(outer);
+    }
+  };
+  STATION_POINTS.forEach((p) => addMarker(p));
+  if (CENTER_POINT) addMarker(CENTER_POINT, true);
+  stationGroup = group;
+  mapGroup.add(group);
+}
+
+/* ================= 高亮 ================= */
+function setCityLabelSelected(featureName) {
+  cityLabelElements.forEach((element, cityName) => {
+    element.classList.toggle('is-selected', cityName === featureName);
+  });
+}
+function setFeatureHighlight(featureName) {
+  if (hoveredFeature === featureName) return;
+  if (hoveredFeature) {
+    featureLiftGroups.get(hoveredFeature)?.forEach((group) => {
+      group.userData.targetZ = group.userData.baseZ ?? 0;
+    });
+    featureSideMaterials.get(hoveredFeature)?.forEach((material) => {
+      material.uniforms.topColor.value.set(mapTheme.accent);
+      material.uniforms.midColor.value.set(mapTheme.sideMid);
+      material.uniforms.bottomColor.value.set(mapTheme.sideBottom);
+      material.uniforms.alpha.value = 0;
+    });
+    featureHighlightMaterials.get(hoveredFeature)?.forEach((material) => {
+      material.userData.targetOpacity = 0;
+    });
+    featureMeshes.get(hoveredFeature)?.forEach((mesh) => {
+      const material = mesh.material;
+      if (material instanceof THREE.MeshStandardMaterial) {
+        material.color.set(material.userData.baseColor ?? mapTheme.surfaceBase);
+        material.emissive.set(material.userData.baseEmissive ?? mapTheme.surfaceEmissive);
+        material.emissiveIntensity = material.userData.baseEmissiveIntensity ?? 0.03;
+        material.opacity = material.userData.baseOpacity ?? 0.86;
+      }
+    });
+  }
+  hoveredFeature = featureName;
+  setCityLabelSelected(featureName);
+  if (!featureName) return;
+  featureLiftGroups.get(featureName)?.forEach((group) => { group.userData.targetZ = 16; });
+  featureSideMaterials.get(featureName)?.forEach((material) => {
+    material.uniforms.topColor.value.set(mapTheme.accent);
+    material.uniforms.midColor.value.set(mapTheme.hoverMid);
+    material.uniforms.bottomColor.value.set(mapTheme.hoverBottom);
+    material.uniforms.alpha.value = 0.9;
+  });
+  featureHighlightMaterials.get(featureName)?.forEach((material) => {
+    material.userData.targetOpacity = 0.32;
+  });
+  featureMeshes.get(featureName)?.forEach((mesh) => {
+    const material = mesh.material;
+    if (material instanceof THREE.MeshStandardMaterial) {
+      material.userData.baseColor ??= `#${material.color.getHexString()}`;
+      material.userData.baseEmissive ??= `#${material.emissive.getHexString()}`;
+      material.userData.baseOpacity ??= material.opacity;
+      material.userData.baseEmissiveIntensity ??= material.emissiveIntensity;
+      material.color.set(mapTheme.accent);
+      material.emissive.set(mapTheme.accent);
+      material.emissiveIntensity = 0.72;
+      material.opacity = 0.68;
+    }
+  });
+}
+function resetAllFeatureHighlights() {
+  featureLiftGroups.forEach((groups) => {
+    groups.forEach((group) => { group.userData.targetZ = group.userData.baseZ ?? 0; });
+  });
+  featureSideMaterials.forEach((materials) => {
+    materials.forEach((material) => {
+      material.uniforms.topColor.value.set(mapTheme.accent);
+      material.uniforms.midColor.value.set(mapTheme.sideMid);
+      material.uniforms.bottomColor.value.set(mapTheme.sideBottom);
+      material.uniforms.alpha.value = 0;
+    });
+  });
+  featureHighlightMaterials.forEach((materials) => {
+    materials.forEach((material) => { material.userData.targetOpacity = 0; });
+  });
+  featureMeshes.forEach((meshes) => {
+    meshes.forEach((mesh) => {
+      const material = mesh.material;
+      if (material instanceof THREE.MeshStandardMaterial) {
+        material.color.set(material.userData.baseColor ?? mapTheme.surfaceBase);
+        material.emissive.set(material.userData.baseEmissive ?? mapTheme.surfaceEmissive);
+        material.emissiveIntensity = material.userData.baseEmissiveIntensity ?? 0.03;
+        material.opacity = material.userData.baseOpacity ?? 0.86;
+      }
+    });
+  });
+  hoveredFeature = '';
+  setCityLabelSelected('');
+}
+
+/* ================= 交互 ================= */
+function hideTip() { tipEl.style.display = 'none'; }
+function showTip(html, x, y) {
+  tipEl.textContent = html;
+  tipEl.style.display = 'block';
+  const pad = 14;
+  const rect = tipEl.getBoundingClientRect();
+  let left = x + pad;
+  let top = y - rect.height - pad;
+  if (left + rect.width > innerWidth - 8) left = x - rect.width - pad;
+  if (top < 8) top = y + pad;
+  tipEl.style.left = `${left}px`;
+  tipEl.style.top = `${top}px`;
+}
+
+function onPointerMove(event) {
+  if (!camera || !renderer) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  const hit = raycaster.intersectObjects(interactiveMeshes, false)[0];
+  const featureName = hit?.object.userData.featureName ?? '';
+  setFeatureHighlight(featureName);
+  if (featureName) prefetchDrillTarget(featureName);
+}
+function onPointerLeave() {
+  resetAllFeatureHighlights();
+  hideTip();
+}
+function resolveDrillTarget(feature) {
+  if (currentState.scope !== 'city') return undefined; // 仅支持 市 → 区县
+  const code = getFeatureCode(feature);
+  if (!code) return undefined;
+  return { scope: 'district', regionName: getFeatureName(feature), code };
+}
+function prefetchDrillTarget(featureName) {
+  const feature = featureByName.get(featureName);
+  if (!feature) return;
+  const target = resolveDrillTarget(feature);
+  if (!target) return;
+  prefetchMapLevel(target.scope, target.code);
+}
+function onPointerDown(event) {
+  if (!camera || !renderer) return;
+  if (event.target instanceof HTMLElement && event.target.closest('.map-drill-control')) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  // 业务站点优先:点中站点显示信息浮层,不触发下钻
+  const stationHit = raycaster.intersectObjects(stationHitMeshes, false)[0];
+  if (stationHit?.object.userData.station) {
+    const station = stationHit.object.userData.station;
+    showTip(station.label ?? '', event.clientX, event.clientY);
+    return;
+  }
+  hideTip();
+  const hit = raycaster.intersectObjects(interactiveMeshes, false)[0];
+  const featureName = hit?.object.userData.featureName;
+  if (typeof featureName === 'string' && featureName) void drillToFeature(featureName);
+}
+
+/* ================= 下钻 ================= */
+function refreshDrillControl() {
+  if (!drillControlEl) return;
+  const scopeLabel = { city: '市级', district: '区县' }[currentState.scope];
+  const backDisabled = !drillStack.length || isDrilling ? 'disabled' : '';
+  drillControlEl.innerHTML = `
+    <button type="button" data-map-action="back" ${backDisabled}>返回上级</button>
+    <span>${scopeLabel} / ${currentState.regionName}</span>
+  `;
+  drillControlEl.querySelectorAll('button').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (button.dataset.mapAction === 'back') void drillBack();
+    });
+  });
+}
+function createDrillControl() {
+  drillControlEl = document.createElement('div');
+  drillControlEl.className = 'map-drill-control';
+  host.appendChild(drillControlEl);
+  refreshDrillControl();
+}
+async function warmInitialMapRenderer(group, buildVersion) {
+  const warmupVersion = ++rendererWarmupVersion;
+  const warmRenderer = renderer;
+  const warmScene = scene;
+  const warmCamera = camera;
+  if (!warmRenderer || !warmScene || !warmCamera) return;
+  const textures = await waitForTerrainTexturesReady();
+  if (warmupVersion !== rendererWarmupVersion || buildVersion !== mapBuildVersion
+    || mapGroup !== group || renderer !== warmRenderer) return;
+  await waitForPreloadSlice();
+  try {
+    await warmRenderer.compileAsync(warmScene, warmCamera);
+  } catch {
+    // 编译失败时下方隐藏渲染兜底
+  }
+  for (const texture of Object.values(textures)) {
+    if (warmupVersion !== rendererWarmupVersion || renderer !== warmRenderer) return;
+    await waitForPreloadSlice();
+    warmRenderer.initTexture(texture);
+  }
+  await waitForPreloadSlice();
+  if (warmupVersion !== rendererWarmupVersion || buildVersion !== mapBuildVersion
+    || mapGroup !== group || renderer !== warmRenderer) return;
+  warmRenderer.render(warmScene, warmCamera);
+  hasRenderedStaticFrame = true;
+  loadingEl.classList.add('done');
+}
+async function rebuildMapForCurrentState() {
+  if (!scene) return;
+  const buildVersion = ++mapBuildVersion;
+  const previousMapGroup = mapGroup;
+  geoData = currentState.geoData;
+  updateProjectionFromGeoData();
+  currentLabels = createLabelsForState();
+  resetAllFeatureHighlights();
+  const nextMapGroup = await createMap();
+  if (buildVersion !== mapBuildVersion || !scene) {
+    disposeObject3D(nextMapGroup);
+    return;
+  }
+  if (previousMapGroup) {
+    scene.remove(previousMapGroup);
+    disposeObject3D(previousMapGroup);
+  }
+  labelRenderer?.domElement.replaceChildren();
+  if (labelRenderer?.domElement) labelRenderer.domElement.style.opacity = '0';
+  mapGroup = nextMapGroup;
+  nextMapGroup.userData.transitionStart = performance.now() / 1000;
+  scene.add(nextMapGroup);
+  createCityMarkers(mapGroup);
+  createStationMarkers();
+  resetAllFeatureHighlights();
+  refreshDrillControl();
+  if (!hasRenderedStaticFrame) void warmInitialMapRenderer(nextMapGroup, buildVersion);
+}
+async function drillToFeature(featureName) {
+  if (isDrilling) return;
+  const feature = featureByName.get(featureName);
+  if (!feature) return;
+  const target = resolveDrillTarget(feature);
+  if (!target) return;
+  isDrilling = true;
+  refreshDrillControl();
+  try {
+    const nextGeoJson = await loadMapLevel(target.scope, target.code);
+    drillStack = [...drillStack, { state: currentState, cameraView: getCurrentCameraView() }];
+    currentState = {
+      scope: target.scope,
+      regionName: target.regionName,
+      code: target.code,
+      geoData: nextGeoJson,
+    };
+    await waitForNextFrame();
+    await rebuildMapForCurrentState();
+  } catch (error) {
+    console.warn('Map drilldown failed', error);
+  } finally {
+    isDrilling = false;
+    refreshDrillControl();
+  }
+}
+async function drillBack() {
+  if (isDrilling) return;
+  const previousItem = drillStack[drillStack.length - 1];
+  if (!previousItem) return;
+  const nextStack = drillStack.slice(0, -1);
+  const currentBeforeBack = currentState;
+  const stackBeforeBack = drillStack;
+  isDrilling = true;
+  drillStack = nextStack;
+  currentState = previousItem.state;
+  refreshDrillControl();
+  try {
+    await waitForNextFrame();
+    await rebuildMapForCurrentState();
+    if (previousItem.cameraView) applyCameraView(previousItem.cameraView);
+  } catch (error) {
+    console.warn('Map drillback failed', error);
+    drillStack = stackBeforeBack;
+    currentState = currentBeforeBack;
+    await rebuildMapForCurrentState();
+  } finally {
+    isDrilling = false;
+    refreshDrillControl();
+  }
+}
+
+/* ================= 初始化 / 渲染循环 ================= */
+function getHostSize() {
+  const width = Math.max(1, Math.round(host.clientWidth || innerWidth));
+  const height = Math.max(1, Math.round(host.clientHeight || innerHeight));
+  return { width, height };
+}
+function setup() {
+  const { width, height } = getHostSize();
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(cameraViewConfig.default.fov, width / height, 1, 2400);
+  camera.position.set(...cameraViewConfig.default.position);
+  camera.lookAt(...cameraViewConfig.default.target);
+
+  renderer = new THREE.WebGLRenderer({
+    alpha: true,
+    antialias: true,
+    failIfMajorPerformanceCaveat: false,
+    powerPreference: 'high-performance',
+  });
+  renderer.setSize(width, height);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+  host.appendChild(renderer.domElement);
+  host.addEventListener('pointermove', onPointerMove);
+  host.addEventListener('pointerdown', onPointerDown);
+  host.addEventListener('pointerleave', onPointerLeave);
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.enablePan = false;
+  controls.minDistance = 520;
+  controls.maxDistance = 1450;
+  controls.target.set(...cameraViewConfig.default.target);
+  controls.addEventListener('change', updateCityLabelPresentation);
+  controls.addEventListener('start', () => { hasUserAdjustedCamera = true; });
+  applyCameraView(resolveBuiltInCameraView(currentState.scope));
+  updateCityLabelPresentation();
+
+  labelRenderer = new CSS2DRenderer();
+  labelRenderer.setSize(width, height);
+  labelRenderer.domElement.className = 'map-label-layer';
+  host.appendChild(labelRenderer.domElement);
+  createDrillControl();
+
+  scene.add(new THREE.AmbientLight(mapTheme.ambientLight, 1.45));
+  const light = new THREE.DirectionalLight(mapTheme.directionalLight, 2.4);
+  light.position.set(120, -240, 420);
+  scene.add(light);
+
+  void rebuildMapForCurrentState();
+  startMapAnimation();
+}
+function startMapAnimation() {
+  if (raf) return;
+  raf = requestAnimationFrame(animate);
+}
+function animate() {
+  raf = 0;
+  const t = performance.now() / 1000;
+  if (mapGroup) {
+    applyGroupTransition(mapGroup, t);
+    if (!mapGroup.userData.transitionStart) {
+      const basePosition = mapGroup.userData.basePosition;
+      if (basePosition) {
+        mapGroup.position.x = basePosition.x;
+        mapGroup.position.y = basePosition.y;
+        mapGroup.position.z = basePosition.z + Math.sin(t * 0.55) * 2;
+      }
+    }
+  }
+  if (ringDecorGroup) ringDecorGroup.rotation.z += 0.004;
+  updateProvinceChaseLight(t);
+  stationPulseRings.forEach((ring) => {
+    const phase = (t * 0.5 + ring.userData.phase) % 1;
+    ring.scale.setScalar(1 + phase * 1.6);
+    const material = ring.material;
+    material.opacity = 0.75 * (1 - phase);
+  });
+  flyLineMaterials.forEach((material) => { material.uniforms.uTime.value = t; });
+  featureLiftGroups.forEach((groups) => {
+    groups.forEach((group) => {
+      group.position.z += ((group.userData.targetZ ?? 0) - group.position.z) * 0.16;
+    });
+  });
+  featureHighlightMaterials.forEach((materials) => {
+    materials.forEach((material) => {
+      material.opacity += ((material.userData.targetOpacity ?? 0) - material.opacity) * 0.18;
+    });
+  });
+  if (scene && camera) {
+    controls?.update();
+    updateCityLabelPresentation();
+    renderer?.render(scene, camera);
+    labelRenderer?.render(scene, camera);
+  }
+  raf = requestAnimationFrame(animate);
+}
+function resize() {
+  if (!camera || !renderer || !labelRenderer) return;
+  const { width, height } = getHostSize();
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+  renderer.setSize(width, height);
+  labelRenderer.setSize(width, height);
+  updateCityLabelPresentation();
+  if (!hasUserAdjustedCamera) {
+    applyCameraView(resolveBuiltInCameraView(currentState.scope));
+  }
+}
+
+/* ================= 启动 ================= */
+(async function boot() {
+  try {
+    const wuhuGeoJson = await loadMapLevel('city', '340200');
+    currentState = { scope: 'city', regionName: '芜湖市', code: '340200', geoData: wuhuGeoJson };
+    geoData = wuhuGeoJson;
+    setup();
+    window.addEventListener('resize', resize);
+    if ('ResizeObserver' in window) {
+      resizeObserver = new ResizeObserver(() => resize());
+      resizeObserver.observe(host);
+    }
+  } catch (error) {
+    console.error('Wuhu map init failed', error);
+    loadingEl.classList.add('error');
+    loadingEl.textContent = `地图数据加载失败:${error?.message ?? error}`;
+  }
+})();
+</script>
+</body>
+</html>
