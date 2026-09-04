@@ -225,6 +225,16 @@ section{position:relative;padding:0 56px 0 200px}
 .about-text em{font-style:normal;color:var(--phosphor)}
 .about-text .prompt{font-family:var(--mono);font-size:13px;color:var(--phosphor);display:block;margin:26px 0 8px;letter-spacing:.1em}
 .stats{display:flex;flex-direction:column;gap:0;border-top:1px solid var(--line)}
+.profile{display:flex;align-items:center;gap:18px;padding:0 0 26px}
+.profile img{
+  width:84px;height:112px;object-fit:cover;
+  border:1px solid var(--line);
+  filter:grayscale(.4) contrast(1.08) brightness(.95);
+  transition:filter .6s var(--ease-hover);
+}
+.profile:hover img{filter:grayscale(0) contrast(1) brightness(1)}
+.profile-cap{font-family:var(--mono);font-size:12px;letter-spacing:.15em;color:var(--white);line-height:2}
+.profile-cap span{display:block;font-size:10px;color:var(--gray)}
 .stat{
   display:flex;justify-content:space-between;align-items:baseline;
   padding:26px 0;border-bottom:1px solid var(--line);
@@ -308,6 +318,7 @@ section{position:relative;padding:0 56px 0 200px}
 .pub .p-title{font-size:clamp(15px,1.4vw,19px);font-weight:600;line-height:1.5;transition:color .4s}
 .pub:hover .p-title{color:var(--phosphor)}
 .pub .p-journal{font-family:var(--mono);font-size:11px;color:var(--gray);letter-spacing:.1em;text-align:right;max-width:220px}
+.pub .p-cited{display:block;margin-top:6px;font-size:10px;color:var(--phosphor);letter-spacing:.2em}
 .papers-more{
   margin-top:36px;font-family:var(--mono);font-size:13px;letter-spacing:.15em;
 }
@@ -535,7 +546,12 @@ footer{
         让数据在实验之前先给出答案。
       </div>
       <div class="stats reveal">
+        <div class="profile">
+          <img src="assets/photo-scholar.jpg" alt="程平 博士">
+          <div class="profile-cap">DR. CHENG PING<span>PhD · The University of Queensland</span><span>材料科学 × 人工智能</span></div>
+        </div>
         <div class="stat"><span class="num" data-count="17">0</span><span class="label">PAPERS<br>发表论文</span></div>
+        <div class="stat"><span class="num" data-count="653">0</span><span class="label">CITATIONS<br>谷歌学术总被引</span></div>
         <div class="stat"><span class="num" data-count="2">0</span><span class="label">PROJECTS<br>在研主持项目</span></div>
         <div class="stat"><span class="num" data-count="3">0</span><span class="label">DEGREES<br>跨学科学位</span></div>
       </div>
@@ -611,45 +627,45 @@ footer{
     <a class="pub reveal" href="https://orcid.org/0000-0001-7111-1179" target="_blank" rel="noopener">
       <span class="p-year">2026</span>
       <span class="p-title">Reliable Machine Learning Screening of Adsorption Energies Is Better Assessed with Formula-Grouped Cross-Validation</span>
-      <span class="p-journal">CATALYSTS</span>
+      <span class="p-journal">CATALYSTS<span class="p-cited">被引 0</span></span>
     </a>
     <a class="pub reveal" href="https://orcid.org/0000-0001-7111-1179" target="_blank" rel="noopener">
       <span class="p-year">2026</span>
       <span class="p-title">Causal Intervention Active Learning for Oxide Material Screening: Balancing Structure Identification and Prediction</span>
-      <span class="p-journal">CATALYSTS</span>
+      <span class="p-journal">CATALYSTS<span class="p-cited">被引 0</span></span>
     </a>
     <a class="pub reveal" href="https://orcid.org/0000-0001-7111-1179" target="_blank" rel="noopener">
       <span class="p-year">2025</span>
       <span class="p-title">Carbonized Ce/Cu Metal–Organic Framework-Derived Porous Nanorods for High-Performance Adsorption of Organic Pollutants</span>
-      <span class="p-journal">LANGMUIR</span>
+      <span class="p-journal">LANGMUIR<span class="p-cited">被引 2</span></span>
     </a>
     <a class="pub reveal" href="https://orcid.org/0000-0001-7111-1179" target="_blank" rel="noopener">
       <span class="p-year">2024</span>
       <span class="p-title">Bimetallic MOF-Derived Porous One-Dimensional Carbon Materials for Electrochemical Sensing of Dopamine</span>
-      <span class="p-journal">CHEM. ENG. J.</span>
+      <span class="p-journal">CHEM. ENG. J.<span class="p-cited">被引 85</span></span>
     </a>
     <a class="pub reveal" href="https://orcid.org/0000-0001-7111-1179" target="_blank" rel="noopener">
       <span class="p-year">2023</span>
       <span class="p-title">Enlarging the Porosity of MOF-Derived Carbons for Supercapacitor Applications by a Template-Free Ethylene Glycol Etching Method</span>
-      <span class="p-journal">J. MATER. CHEM. A</span>
+      <span class="p-journal">J. MATER. CHEM. A<span class="p-cited">被引 28</span></span>
     </a>
     <a class="pub reveal" href="https://orcid.org/0000-0001-7111-1179" target="_blank" rel="noopener">
       <span class="p-year">2022</span>
       <span class="p-title">Template- and Etching-Free Fabrication of 2D Hollow Bimetallic MOF Hexagonal Nanoplates for Ammonia Sensing</span>
-      <span class="p-journal">CHEM. ENG. J.</span>
+      <span class="p-journal">CHEM. ENG. J.<span class="p-cited">被引 57</span></span>
     </a>
     <a class="pub reveal" href="https://orcid.org/0000-0001-7111-1179" target="_blank" rel="noopener">
       <span class="p-year">2020</span>
       <span class="p-title">In-situ Fabrication of Nanoarchitectured MOF Filter for Water Purification</span>
-      <span class="p-journal">J. HAZARD. MATER.</span>
+      <span class="p-journal">J. HAZARD. MATER.<span class="p-cited">被引 156</span></span>
     </a>
     <a class="pub reveal" href="https://orcid.org/0000-0001-7111-1179" target="_blank" rel="noopener">
       <span class="p-year">2020</span>
       <span class="p-title">A General Approach to Shaped MOF-Containing Aerogels toward Practical Water Treatment Application</span>
-      <span class="p-journal">ADV. SUSTAIN. SYST.</span>
+      <span class="p-journal">ADV. SUSTAIN. SYST.<span class="p-cited">被引 75</span></span>
     </a>
     <div class="papers-more reveal">
-      &gt; 共 17 篇已收录成果 —— <a href="https://orcid.org/0000-0001-7111-1179" target="_blank" rel="noopener">完整列表见 ORCID ↗</a>
+      &gt; 共 17 篇已收录成果 · 谷歌学术总被引 653 / h-index 8(2026-09)—— <a href="https://scholar.google.com/citations?user=9NV537sAAAAJ" target="_blank" rel="noopener">GOOGLE SCHOLAR ↗</a> · <a href="https://orcid.org/0000-0001-7111-1179" target="_blank" rel="noopener">ORCID ↗</a>
     </div>
   </section>
 
@@ -736,7 +752,7 @@ footer{
       <div class="socials reveal">
         <a href="mailto:peter599177@gmail.com">PETER599177@GMAIL.COM <i>↗</i></a>
         <a href="#" onclick="event.preventDefault();navigator.clipboard&&navigator.clipboard.writeText('ahcp19950707');const t=this.firstChild;t.textContent='微信号已复制 · COPIED ';setTimeout(()=>t.textContent='WECHAT · AHCP19950707 ',1600)" title="点击复制微信号 ahcp19950707">WECHAT · AHCP19950707 <i>⧉</i></a>
-        <a href="#">GOOGLE SCHOLAR <i>↗</i></a>
+        <a href="https://scholar.google.com/citations?user=9NV537sAAAAJ" target="_blank" rel="noopener">GOOGLE SCHOLAR <i>↗</i></a>
         <a href="https://orcid.org/0000-0001-7111-1179" target="_blank" rel="noopener">ORCID <i>↗</i></a>
         <a href="#">RESEARCHGATE <i>↗</i></a>
       </div>
