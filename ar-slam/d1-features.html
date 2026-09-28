@@ -2,19 +2,255 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <meta name="robots" content="noindex">
-<title>D1 · 特征追踪可视化（建设中）</title>
+<link rel="icon" href="data:,">
+<title>D1 · 特征追踪可视化</title>
 <style>
-body{background:#000;color:#fff;font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;text-align:center;padding:24px}
-a{color:#8052ff}
+:root{--void:#000;--bone:#fff;--ash:#9a9a9a;--mist:#bdbdbd;--iris:#8052ff;--saffron:#ffb829;--verdant:#2ee6a8}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--void);color:var(--bone);font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;-webkit-font-smoothing:antialiased;min-height:100vh;display:flex;flex-direction:column}
+header{padding:14px 16px 10px;display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+h1{font-size:16px;font-weight:700}
+header a{font-size:12px;color:var(--ash)}
+#stage{position:relative;width:100%;background:#0a0a0a;overflow:hidden;touch-action:none}
+#cam{display:block;width:100%;height:auto}
+#overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+#hud{display:flex;gap:0;border-top:1px solid #1c1c1c;border-bottom:1px solid #1c1c1c}
+#hud .cell{flex:1;padding:10px 4px;text-align:center}
+#hud .v{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
+#hud .k{font-size:11px;color:var(--ash);margin-top:2px}
+#hud .good{color:var(--verdant)}#hud .warn{color:var(--saffron)}#hud .bad{color:#ff5a5a}
+#controls{display:flex;gap:10px;padding:14px 16px}
+button{flex:1;background:#161616;color:var(--bone);border:1px solid #2c2c2c;border-radius:12px;padding:13px 8px;font-size:14px;font-weight:600;font-family:inherit}
+button:active{border-color:var(--iris)}
+button.primary{background:var(--iris);border-color:var(--iris)}
+#msg{padding:0 16px;font-size:12px;color:var(--ash);line-height:1.7;min-height:1.5em}
+#msg.err{color:#ff5a5a}
+footer{margin-top:auto;padding:14px 16px;font-size:11px;color:#555;line-height:1.6}
 </style>
 </head>
 <body>
-<main>
+<header>
   <h1>D1 · 特征追踪可视化</h1>
-  <p style="color:#9a9a9a;margin-top:12px;line-height:1.8">建设中。将实现：getUserMedia 降采样 VGA → FAST 角点 + LK 光流轨迹叠加。<br>验收：Reno14 ≥20fps，缓慢平移轨迹稳定。</p>
-  <p style="margin-top:24px"><a href="/ar-slam/">← 返回测试中心</a></p>
-</main>
+  <a href="/ar-slam/">← 测试中心</a>
+</header>
+
+<div id="stage">
+  <video id="cam" playsinline muted autoplay></video>
+  <canvas id="overlay"></canvas>
+</div>
+
+<div id="hud">
+  <div class="cell"><div class="v" id="hFps">–</div><div class="k">FPS（验收 ≥20）</div></div>
+  <div class="cell"><div class="v" id="hMs">–</div><div class="k">单帧处理 ms</div></div>
+  <div class="cell"><div class="v" id="hPts">–</div><div class="k">跟踪点数</div></div>
+  <div class="cell"><div class="v" id="hRe">0</div><div class="k">重检测次数</div></div>
+</div>
+
+<div id="controls">
+  <button class="primary" id="btnCam">启动摄像头</button>
+  <button id="btnFile">回放视频文件</button>
+  <button id="btnReset">重置追踪</button>
+  <input type="file" id="fileIn" accept="video/*" hidden>
+</div>
+
+<p id="msg">操作：启动后缓慢平移手机，观察彩色轨迹是否稳定跟随现实纹理（不集体跳变即为通过）。</p>
+<footer>jsfeat (MIT) · FAST 角点 + LK 金字塔光流 · 处理分辨率 320 宽 · 摄像头需 HTTPS/localhost</footer>
+
+<script src="vendor/jsfeat-min.js"></script>
+<script>
+"use strict";
+// ============ 参数 ============
+const PROC_W   = 320;    // 处理宽度（高度按视频比例）
+const TARGET   = 150;    // 目标跟踪点数
+const REDETECT = 90;     // 低于此数触发重检测
+const FAST_TH  = 20;     // FAST 阈值
+const BORDER   = 6;      // 边缘掩蔽
+const CELL     = 16;     // 网格 NMS 单元(px)：每格留分最高者
+const TRAIL    = 14;     // 轨迹长度
+const MAX      = 400;    // 点槽上限
+// LK
+const LK_LEVELS = 3, LK_WIN = 15, LK_ITER = 20, LK_EPS = 0.01, LK_EIGEN = 0.001;
+
+// ============ DOM ============
+const video   = document.getElementById('cam');
+const overlay = document.getElementById('overlay');
+const octx    = overlay.getContext('2d');
+const msg     = document.getElementById('msg');
+const hFps = document.getElementById('hFps'), hMs = document.getElementById('hMs'),
+      hPts = document.getElementById('hPts'), hRe = document.getElementById('hRe');
+
+// ============ 状态 ============
+let procW = 0, procH = 0;
+let procCv, procCtx;                       // 降采样画布
+let imgU8, pyrPrev, pyrCurr;               // jsfeat 结构
+let cornerPool = [];                       // FAST 角点池
+let pts = [];                              // {x,y,age,trail:[[x,y]...]}
+let xyPrev, xyCurr, lkStatus;              // LK 平铺数组
+let redetects = 0, running = false;
+let fpsWin = [];                           // FPS 滑动窗口
+
+function allocStructs() {
+  procCv = document.createElement('canvas');
+  procCv.width = procW; procCv.height = procH;
+  procCtx = procCv.getContext('2d', { willReadFrequently: true });
+  imgU8   = new jsfeat.matrix_t(procW, procH, jsfeat.U8_t | jsfeat.C1_t);
+  pyrPrev = new jsfeat.pyramid_t(LK_LEVELS);
+  pyrCurr = new jsfeat.pyramid_t(LK_LEVELS);
+  pyrPrev.allocate(procW, procH, jsfeat.U8_t | jsfeat.C1_t);
+  pyrCurr.allocate(procW, procH, jsfeat.U8_t | jsfeat.C1_t);
+  cornerPool = [];
+  for (let i = 0; i < 30000; i++) cornerPool.push(new jsfeat.keypoint_t(0, 0, 0, 0, -1));
+  jsfeat.cache.allocate(procW * procH * 4);  // LK 内部缓冲池，未初始化会读空节点
+  xyPrev = new Float32Array(MAX * 2);
+  xyCurr = new Float32Array(MAX * 2);
+  lkStatus = new Uint8Array(MAX);
+  overlay.width = procW; overlay.height = procH;
+  jsfeat.fast_corners.set_threshold(FAST_TH);
+}
+
+function resetTrack() { pts = []; }
+
+// ============ 特征检测（网格 NMS）============
+function detectPoints() {
+  const need = TARGET - pts.length;
+  if (need <= 0) return;
+  const n = Math.min(jsfeat.fast_corners.detect(imgU8, cornerPool, BORDER), cornerPool.length);
+  const cols = Math.ceil(procW / CELL), rows = Math.ceil(procH / CELL);
+  const best = new Map();   // cellIdx -> cornerPool index
+  // 已有跟踪点占据的格子跳过，避免扎堆
+  const occupied = new Set();
+  for (const p of pts) occupied.add((p.y / CELL | 0) * cols + (p.x / CELL | 0));
+  for (let i = 0; i < n; i++) {
+    const c = cornerPool[i];
+    const ci = (c.y / CELL | 0) * cols + (c.x / CELL | 0);
+    if (occupied.has(ci)) continue;
+    const cur = best.get(ci);
+    if (cur === undefined || cornerPool[cur].score < c.score) best.set(ci, i);
+  }
+  const picked = [...best.values()].sort((a, b) => cornerPool[b].score - cornerPool[a].score);
+  for (let i = 0; i < Math.min(need, picked.length); i++) {
+    const c = cornerPool[picked[i]];
+    pts.push({ x: c.x, y: c.y, age: 0, trail: [[c.x, c.y]] });
+  }
+}
+
+// ============ 主循环 ============
+let lastT = 0;
+function loop(t) {
+  if (!running) return;
+  requestAnimationFrame(loop);
+  if (video.readyState < 2 || !video.videoWidth) return;
+
+  const t0 = performance.now();
+
+  // 1. 降采样取帧
+  procCtx.drawImage(video, 0, 0, procW, procH);
+  const rgba = procCtx.getImageData(0, 0, procW, procH).data;
+  jsfeat.imgproc.grayscale(rgba, procW, procH, imgU8);
+
+  // 2. 金字塔（交换 ping-pong，零拷贝）
+  [pyrPrev, pyrCurr] = [pyrCurr, pyrPrev];
+  pyrCurr.build(imgU8, false);
+
+  // 3. LK 光流跟踪
+  if (pts.length > 0 && lastT > 0) {
+    for (let i = 0; i < pts.length; i++) { xyPrev[i * 2] = pts[i].x; xyPrev[i * 2 + 1] = pts[i].y; }
+    jsfeat.optical_flow_lk.track(pyrPrev, pyrCurr, xyPrev, xyCurr, pts.length, LK_WIN, LK_ITER, lkStatus, LK_EPS, LK_EIGEN);
+    const alive = [];
+    for (let i = 0; i < pts.length; i++) {
+      if (lkStatus[i] === 1) {
+        const p = pts[i];
+        p.x = xyCurr[i * 2]; p.y = xyCurr[i * 2 + 1]; p.age++;
+        p.trail.push([p.x, p.y]);
+        if (p.trail.length > TRAIL) p.trail.shift();
+        alive.push(p);
+      }
+    }
+    pts = alive;
+  }
+
+  // 4. 点数不足则重检测
+  if (pts.length < REDETECT) { detectPoints(); redetects++; hRe.textContent = redetects; }
+
+  const ms = performance.now() - t0;
+
+  // 5. 渲染叠加层
+  octx.clearRect(0, 0, procW, procH);
+  octx.lineWidth = 1.2;
+  for (const p of pts) {
+    const fresh = p.age < 2;
+    // 轨迹
+    if (p.trail.length > 1) {
+      octx.strokeStyle = fresh ? 'rgba(255,184,41,.85)' : 'rgba(128,82,255,.85)';
+      octx.beginPath();
+      octx.moveTo(p.trail[0][0], p.trail[0][1]);
+      for (let i = 1; i < p.trail.length; i++) octx.lineTo(p.trail[i][0], p.trail[i][1]);
+      octx.stroke();
+    }
+    // 点
+    octx.fillStyle = fresh ? '#ffb829' : '#2ee6a8';
+    octx.beginPath();
+    octx.arc(p.x, p.y, 2.2, 0, 6.2832);
+    octx.fill();
+  }
+
+  // 6. HUD
+  if (lastT > 0) {
+    fpsWin.push(1000 / Math.max(1, t - lastT));
+    if (fpsWin.length > 30) fpsWin.shift();
+    const fps = fpsWin.reduce((a, b) => a + b, 0) / fpsWin.length;
+    hFps.textContent = fps.toFixed(0);
+    hFps.className = 'v ' + (fps >= 20 ? 'good' : fps >= 12 ? 'warn' : 'bad');
+  }
+  lastT = t;
+  hMs.textContent = ms.toFixed(1);
+  hPts.textContent = pts.length;
+}
+
+// ============ 输入源 ============
+function startLoop() {
+  if (running) return;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw) return;
+  procW = PROC_W;
+  procH = Math.round(PROC_W * vh / vw) & ~1;
+  allocStructs();
+  resetTrack(); redetects = 0; hRe.textContent = '0';
+  running = true; lastT = 0;
+  requestAnimationFrame(loop);
+}
+
+function setMsg(text, err) { msg.textContent = text; msg.className = err ? 'err' : ''; }
+
+document.getElementById('btnCam').onclick = async () => {
+  setMsg('请求摄像头权限…');
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    setMsg('摄像头运行中。缓慢平移手机，观察轨迹稳定性。');
+    startLoop();
+  } catch (e) {
+    setMsg('摄像头失败：' + e.name + ' — 需 HTTPS 或 localhost 环境，且需授权。', true);
+  }
+};
+
+document.getElementById('btnFile').onclick = () => document.getElementById('fileIn').click();
+document.getElementById('fileIn').onchange = (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  if (video.srcObject) { video.srcObject.getTracks().forEach(t => t.stop()); video.srcObject = null; }
+  video.src = URL.createObjectURL(f);
+  video.loop = true;
+  video.play().then(() => { setMsg('回放模式：' + f.name); startLoop(); });
+};
+
+document.getElementById('btnReset').onclick = () => { resetTrack(); setMsg('已重置，下一帧重新检测特征。'); };
+</script>
 </body>
 </html>
