@@ -73,7 +73,7 @@ footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-heig
   <input type="file" id="fileIn" accept="video/*" hidden>
 </div>
 
-<p id="msg">验收：桌面平移 1m 往返，轨迹图连续无跳变；静止时看「静止抖动σ」。遮挡镜头 2 秒 → 状态应变黄（IMU 外推）或红（丢失）。</p>
+<p id="msg">验收：桌面平移 1m 往返，轨迹图应平滑往返（位姿攒够视差才更新，静止时冻结是特性）。遮挡镜头 2 秒 → 状态应变黄（IMU 外推）或红（丢失）。</p>
 <footer>jsfeat (MIT) · FAST+LK → 归一化 8 点法 + RANSAC → 本质矩阵分解 + 手性校验 · 单目尺度任意 · IMU 仅丢踪外推（松耦合）</footer>
 
 <script src="vendor/jsfeat-min.js"></script>
@@ -85,6 +85,7 @@ const LK_LEVELS = 3, LK_WIN = 15, LK_ITER = 20, LK_EPS = 0.01, LK_EIGEN = 0.001;
 const MIN_PTS_POSE = 40;        // 位姿估计最少跟踪点
 const RANSAC_ITER = 64, RANSAC_TH = 0.004, MIN_INLIERS = 15, MIN_INLIER_RATIO = 0.4;
 const FOCAL_RATIO = 1.0;        // f = max(w,h) * FOCAL_RATIO（内参未知，近似）
+const PARALLAX_TH = 2.0;        // 基线累积：自上次估计起中位视差 ≥2px 才估位姿（压帧间噪声/近平面退化）
 
 // ============ DOM ============
 const video = document.getElementById('cam');
@@ -117,6 +118,7 @@ let state = 'INIT';
 let jitWin = [];                                 // 静止抖动窗口
 // IMU
 let imuQ = null, imuQPrev = null, imuReady = false;
+let imuEvtCnt = 0, imuNullCnt = 0, motionEvtCnt = 0;   // 诊断计数
 // 日志（离线分析用）
 window.__log = [];
 window.__dump = () => JSON.stringify(window.__log);
@@ -160,7 +162,7 @@ function detectPoints() {
   const picked = [...best.values()].sort((a, b) => cornerPool[b].score - cornerPool[a].score);
   for (let i = 0; i < Math.min(need, picked.length); i++) {
     const c = cornerPool[picked[i]];
-    pts.push({ x: c.x, y: c.y, px: c.x, py: c.y, age: 0, trail: [[c.x, c.y]], inlier: true });
+    pts.push({ x: c.x, y: c.y, px: c.x, py: c.y, kx: c.x, ky: c.y, kSet: false, age: 0, trail: [[c.x, c.y]], inlier: true });
   }
 }
 
@@ -276,7 +278,8 @@ function recoverPose(E, x1, y1, x2, y2, mask, n) {
 
 // ============ IMU（松耦合：仅丢踪外推） ============
 function onOrientation(e) {
-  if (e.alpha === null) return;
+  imuEvtCnt++;
+  if (e.alpha === null) { imuNullCnt++; return; }
   const d = Math.PI / 360;
   const a = e.alpha * d, b = e.beta * d, g = e.gamma * d;
   // ZXY 欧拉 → 四元数
@@ -305,12 +308,15 @@ function imuDeltaR() {
   ];
 }
 if (window.DeviceOrientationEvent) {
-  if ('ontouchstart' in window && typeof DeviceOrientationEvent.requestPermission === 'function') {
-    // iOS 权限（本链路 Android-only，防御性保留）
+  if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+    // iOS 需手势内请求权限（本链路 Android-only，防御性保留）
   } else {
     window.addEventListener('deviceorientationabsolute', onOrientation, true);
     window.addEventListener('deviceorientation', onOrientation, true);
   }
+}
+if (window.DeviceMotionEvent) {
+  window.addEventListener('devicemotion', () => { motionEvtCnt++; }, true);
 }
 
 // ============ 主循环 ============
@@ -348,16 +354,23 @@ function loop(t) {
   }
   if (pts.length < REDETECT) { detectPoints(); redetects++; }
 
-  // ---- 位姿估计 ----
+  // ---- 位姿估计（基线累积：攒够视差才估，估计帧=上次成功帧） ----
   let rotDeg = null, tDir = null, inliers = 0;
   const dRimu = imuDeltaR();                       // IMU 帧间旋转（松耦合备用）
   const imuRot = dRimu ? rotAngle(dRimu) : null;
-  if (corresp && pts.length >= MIN_PTS_POSE) {
-    const n = pts.length;
+  // 有基线坐标的点 + 自基线帧起的中位视差
+  const kPts = pts.filter(p => p.kSet);
+  let medFlow = 0;
+  if (kPts.length > 0) {
+    const flows = kPts.map(p => Math.hypot(p.x - p.kx, p.y - p.ky)).sort((a, b) => a - b);
+    medFlow = flows[flows.length >> 1];
+  }
+  if (corresp && kPts.length >= MIN_PTS_POSE && medFlow >= PARALLAX_TH) {
+    const n = kPts.length;
     const x1 = new Float64Array(n), y1 = new Float64Array(n), x2 = new Float64Array(n), y2 = new Float64Array(n);
     for (let i = 0; i < n; i++) {
-      x1[i] = (pts[i].px - cx) / focal; y1[i] = (pts[i].py - cy) / focal;
-      x2[i] = (pts[i].x  - cx) / focal; y2[i] = (pts[i].y  - cy) / focal;
+      x1[i] = (kPts[i].kx - cx) / focal; y1[i] = (kPts[i].ky - cy) / focal;
+      x2[i] = (kPts[i].x  - cx) / focal; y2[i] = (kPts[i].y  - cy) / focal;
     }
     const est = estimateE(x1, y1, x2, y2, n);
     if (est) {
@@ -365,12 +378,11 @@ function loop(t) {
       const sol = recoverPose(est.E, x1, y1, x2, y2, est.mask, n);
       if (sol) {
         rotDeg = rotAngle(sol.R); tDir = sol.t;
-        // 物理上限门控 + IMU 交叉校验（松耦合核心：视觉异常帧不信视觉）
-        const ROT_CAP = 3.0;                        // °/帧
-        const imuDisagree = imuRot !== null && Math.abs(rotDeg - imuRot) > 2.0;
+        const ROT_CAP = 6.0;                        // °/次估计（基线帧间隔不定，放宽）
+        const imuDisagree = imuRot !== null && Math.abs(rotDeg - imuRot) > 4.0;
         if (rotDeg > ROT_CAP || imuDisagree) {
-          if (dRimu) { poseR = mul33(poseR, tr33(dRimu)); }  // 有 IMU 则用 IMU 旋转
-          rejects++;                                          // 平移帧丢弃（噪声源）
+          if (dRimu) { poseR = mul33(poseR, tr33(dRimu)); }
+          rejects++;
           tDir = null; rotDeg = imuRot;
         } else {
           const Rt = tr33(sol.R);
@@ -380,11 +392,20 @@ function loop(t) {
           path.push([poseT[0], poseT[2]]);
           if (path.length > 600) path.shift();
         }
+        // 成功估计 → 当前帧成为新基线
+        for (const p of pts) { p.kx = p.x; p.ky = p.y; p.kSet = true; }
         state = 'TRACK';
-        for (let i = 0; i < n; i++) pts[i].inlier = !!est.mask[i];
+        for (let i = 0; i < n; i++) kPts[i].inlier = !!est.mask[i];
       } else state = 'LOST';
     } else state = 'LOST';
-  } else if (corresp) state = 'LOST';
+  } else if (corresp && kPts.length < MIN_PTS_POSE && pts.length >= MIN_PTS_POSE) {
+    // 基线重建（初始化或丢失恢复）：当前帧落位为基线，等视差累积
+    for (const p of pts) { p.kx = p.x; p.ky = p.y; p.kSet = true; }
+    state = 'TRACK';
+  } else if (corresp && (state === 'LOST' || state === 'IMU')) {
+    state = 'LOST';   // 点数不足，保持丢失
+  }
+  // state 已是 TRACK 且本帧未达视差阈值：保持 TRACK，位姿不变（等基线）
 
   // ---- IMU 丢踪外推 ----
   if ((state === 'LOST') && dRimu) {
@@ -469,7 +490,10 @@ function loop(t) {
   pRot.textContent = rotDeg !== null ? rotDeg.toFixed(2) : '–';
   pT.textContent = tDir ? tDir.map(v => v.toFixed(2)).join(', ') : '–';
   pPos.textContent = poseT.map(v => v.toFixed(2)).join(', ');
-  pImu.textContent = imuReady ? '已连接' : '无数据';
+  // IMU 诊断显示：区分"事件根本没发"与"事件发了但数据为空"
+  pImu.textContent = imuReady ? `已连接(${imuEvtCnt})`
+    : imuEvtCnt > 0 ? `事件${imuEvtCnt}次但数据空`
+    : motionEvtCnt > 0 ? `仅motion(${motionEvtCnt})` : '无事件(浏览器不支持?)';
   pImu.className = imuReady ? '' : 'bad';
   pRej.textContent = rejects;
 
