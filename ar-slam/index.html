@@ -40,16 +40,16 @@ footer a{border-bottom:1px solid #333}
 
 <main>
   <a class="milestone" href="d1-features.html">
-    <div class="row"><span class="name">D1 · 特征追踪可视化</span><span class="badge doing">待真机实测</span></div>
-    <p class="desc">getUserMedia 降采样 VGA → FAST 角点 + LK 光流，特征点轨迹叠加显示。纯 JS 原型（jsfeat 解构起步）。桌面合成视频回放已验证：60fps、单帧处理 2.4~5ms、轨迹稳定。</p>
+    <div class="row"><span class="name">D1 · 特征追踪可视化</span><span class="badge done">已通过 ✓</span></div>
+    <p class="desc">getUserMedia 降采样 VGA → FAST 角点 + LK 光流，特征点轨迹叠加显示。纯 JS 原型（jsfeat 解构起步）。桌面合成视频回放已验证：60fps、单帧处理 2.4~5ms、轨迹稳定。Reno14 真机验收通过（2026-09-28）。</p>
     <p class="accept">≥20fps；缓慢平移时轨迹稳定、不集体跳变</p>
   </a>
 
-  <div class="milestone">
-    <div class="row"><span class="name">D2 · 相对位姿 + IMU 松耦合</span><span class="badge todo">待建设</span></div>
-    <p class="desc">本质矩阵 + 8点法 + RANSAC 求帧间 6DoF 位姿；IMU 松耦合（姿态先验 / 尺度约束 / 丢踪外推）；预测外推消抖动。帧率不足则热模块转 Rust/WASM。</p>
+  <a class="milestone" href="d2-pose.html">
+    <div class="row"><span class="name">D2 · 相对位姿 + IMU 松耦合</span><span class="badge doing">待真机实测</span></div>
+    <p class="desc">本质矩阵 + 8点法 + RANSAC 求帧间 6DoF 位姿；物理上限门控丢弃噪声帧；IMU 松耦合（异常帧交叉校验 + 丢踪外推）；俯视轨迹图。桌面合成视频自验：60fps、方向一致率 71%、异常旋转帧已压制。</p>
     <p class="accept">桌面平移 1m 往返位姿连续无跳变；静止抖动量级实测记录</p>
-  </div>
+  </a>
 
   <div class="milestone">
     <div class="row"><span class="name">D3 · 平面锚定 + 丢踪保持</span><span class="badge todo">待建设</span></div>

@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="robots" content="noindex">
+<link rel="icon" href="data:,">
+<title>D2 · 相对位姿 + IMU 松耦合</title>
+<style>
+:root{--void:#000;--bone:#fff;--ash:#9a9a9a;--iris:#8052ff;--saffron:#ffb829;--verdant:#2ee6a8;--red:#ff5a5a}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--void);color:var(--bone);font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;-webkit-font-smoothing:antialiased;min-height:100vh;display:flex;flex-direction:column}
+header{padding:14px 16px 10px;display:flex;align-items:baseline;justify-content:space-between}
+h1{font-size:16px;font-weight:700}
+header a{font-size:12px;color:var(--ash)}
+#stage{position:relative;width:100%;background:#0a0a0a;overflow:hidden}
+#cam{display:block;width:100%;height:auto}
+#overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+#hud{display:flex;border-top:1px solid #1c1c1c;border-bottom:1px solid #1c1c1c}
+#hud .cell{flex:1;padding:8px 2px;text-align:center}
+#hud .v{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums}
+#hud .k{font-size:10px;color:var(--ash);margin-top:2px}
+.good{color:var(--verdant)}.warn{color:var(--saffron)}.bad{color:var(--red)}
+#poseBar{display:flex;gap:10px;padding:10px 16px;align-items:stretch}
+#pathCv{flex:0 0 44%;background:#0a0a0a;border:1px solid #1c1c1c;border-radius:10px}
+#poseInfo{flex:1;font-size:12px;color:var(--mist,#bdbdbd);line-height:1.9}
+#poseInfo b{color:var(--bone);font-variant-numeric:tabular-nums}
+.stTrack{color:var(--verdant)}.stImu{color:var(--saffron)}.stLost{color:var(--red)}
+#controls{display:flex;gap:10px;padding:6px 16px 12px}
+button{flex:1;background:#161616;color:var(--bone);border:1px solid #2c2c2c;border-radius:12px;padding:12px 8px;font-size:13px;font-weight:600;font-family:inherit}
+button:active{border-color:var(--iris)}
+button.primary{background:var(--iris);border-color:var(--iris)}
+#msg{padding:0 16px 10px;font-size:12px;color:var(--ash);line-height:1.7}
+#msg.err{color:var(--red)}
+footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-height:1.6}
+</style>
+</head>
+<body>
+<header>
+  <h1>D2 · 相对位姿 + IMU 松耦合</h1>
+  <a href="/ar-slam/">← 测试中心</a>
+</header>
+
+<div id="stage">
+  <video id="cam" playsinline muted autoplay></video>
+  <canvas id="overlay"></canvas>
+</div>
+
+<div id="hud">
+  <div class="cell"><div class="v" id="hFps">–</div><div class="k">FPS</div></div>
+  <div class="cell"><div class="v" id="hMs">–</div><div class="k">处理 ms</div></div>
+  <div class="cell"><div class="v" id="hPts">–</div><div class="k">跟踪点</div></div>
+  <div class="cell"><div class="v" id="hInl">–</div><div class="k">内点</div></div>
+  <div class="cell"><div class="v" id="hJit">–</div><div class="k">静止抖动σ°</div></div>
+</div>
+
+<div id="poseBar">
+  <canvas id="pathCv" width="360" height="360"></canvas>
+  <div id="poseInfo">
+    状态 <b id="pState">–</b><br>
+    帧间旋转 <b id="pRot">–</b>°<br>
+    平移方向 <b id="pT">–</b><br>
+    位置(相对) <b id="pPos">0, 0, 0</b><br>
+    丢弃帧 <b id="pRej">0</b><br>
+    IMU <b id="pImu">未连接</b>
+  </div>
+</div>
+
+<div id="controls">
+  <button class="primary" id="btnCam">启动摄像头</button>
+  <button id="btnFile">回放视频文件</button>
+  <button id="btnReset">重置位姿</button>
+  <input type="file" id="fileIn" accept="video/*" hidden>
+</div>
+
+<p id="msg">验收：桌面平移 1m 往返，轨迹图连续无跳变；静止时看「静止抖动σ」。遮挡镜头 2 秒 → 状态应变黄（IMU 外推）或红（丢失）。</p>
+<footer>jsfeat (MIT) · FAST+LK → 归一化 8 点法 + RANSAC → 本质矩阵分解 + 手性校验 · 单目尺度任意 · IMU 仅丢踪外推（松耦合）</footer>
+
+<script src="vendor/jsfeat-min.js"></script>
+<script>
+"use strict";
+// ============ 参数 ============
+const PROC_W = 320, TARGET = 150, REDETECT = 90, FAST_TH = 20, BORDER = 6, CELL = 16, TRAIL = 14, MAX = 400;
+const LK_LEVELS = 3, LK_WIN = 15, LK_ITER = 20, LK_EPS = 0.01, LK_EIGEN = 0.001;
+const MIN_PTS_POSE = 40;        // 位姿估计最少跟踪点
+const RANSAC_ITER = 64, RANSAC_TH = 0.004, MIN_INLIERS = 15, MIN_INLIER_RATIO = 0.4;
+const FOCAL_RATIO = 1.0;        // f = max(w,h) * FOCAL_RATIO（内参未知，近似）
+
+// ============ DOM ============
+const video = document.getElementById('cam');
+const overlay = document.getElementById('overlay'), octx = overlay.getContext('2d');
+const pathCv = document.getElementById('pathCv'), pctx = pathCv.getContext('2d');
+const msg = document.getElementById('msg');
+const $ = id => document.getElementById(id);
+const pState = $('pState'), pRot = $('pRot'), pT = $('pT'), pPos = $('pPos'), pImu = $('pImu'), pRej = $('pRej');
+
+// ============ 3×3 矩阵小工具（行主序数组） ============
+const I3 = () => [1,0,0, 0,1,0, 0,0,1];
+const mul33 = (A,B) => { const C = new Array(9);
+  for(let i=0;i<3;i++)for(let j=0;j<3;j++) C[i*3+j] = A[i*3]*B[j] + A[i*3+1]*B[3+j] + A[i*3+2]*B[6+j];
+  return C; };
+const tr33 = A => [A[0],A[3],A[6], A[1],A[4],A[7], A[2],A[5],A[8]];
+const mv33 = (A,v) => [A[0]*v[0]+A[1]*v[1]+A[2]*v[2], A[3]*v[0]+A[4]*v[1]+A[5]*v[2], A[6]*v[0]+A[7]*v[1]+A[8]*v[2]];
+const det33 = A => A[0]*(A[4]*A[8]-A[5]*A[7]) - A[1]*(A[3]*A[8]-A[5]*A[6]) + A[2]*(A[3]*A[7]-A[4]*A[6]);
+const neg33 = A => A.map(x=>-x);
+const rotAngle = R => Math.acos(Math.min(1, Math.max(-1, (R[0]+R[4]+R[8]-1)/2))) * 180/Math.PI;
+
+// ============ 状态 ============
+let procW = 0, procH = 0, procCv, procCtx, imgU8, pyrPrev, pyrCurr, cornerPool = [];
+let pts = [];                                   // {x,y,px,py,age,trail,inlier}
+let xyPrev, xyCurr, lkStatus;
+let redetects = 0, rejects = 0, running = false, fpsWin = [], lastT = 0;
+let focal = 320, cx = 160, cy = 120;
+// 位姿
+let poseR = I3(), poseT = [0,0,0], path = [];
+let state = 'INIT';
+let jitWin = [];                                 // 静止抖动窗口
+// IMU
+let imuQ = null, imuQPrev = null, imuReady = false;
+// 日志（离线分析用）
+window.__log = [];
+window.__dump = () => JSON.stringify(window.__log);
+
+function allocStructs() {
+  procCv = document.createElement('canvas');
+  procCv.width = procW; procCv.height = procH;
+  procCtx = procCv.getContext('2d', { willReadFrequently: true });
+  imgU8 = new jsfeat.matrix_t(procW, procH, jsfeat.U8_t | jsfeat.C1_t);
+  pyrPrev = new jsfeat.pyramid_t(LK_LEVELS); pyrCurr = new jsfeat.pyramid_t(LK_LEVELS);
+  pyrPrev.allocate(procW, procH, jsfeat.U8_t | jsfeat.C1_t);
+  pyrCurr.allocate(procW, procH, jsfeat.U8_t | jsfeat.C1_t);
+  jsfeat.cache.allocate(procW * procH * 8);
+  cornerPool = [];
+  for (let i = 0; i < 30000; i++) cornerPool.push(new jsfeat.keypoint_t(0, 0, 0, 0, -1));
+  xyPrev = new Float32Array(MAX * 2); xyCurr = new Float32Array(MAX * 2);
+  lkStatus = new Uint8Array(MAX);
+  overlay.width = procW; overlay.height = procH;
+  jsfeat.fast_corners.set_threshold(FAST_TH);
+  focal = Math.max(procW, procH) * FOCAL_RATIO; cx = procW / 2; cy = procH / 2;
+}
+function resetAll() {
+  pts = []; poseR = I3(); poseT = [0,0,0]; path = []; state = 'INIT'; jitWin = []; rejects = 0;
+  window.__log.length = 0;
+}
+
+// ============ 特征检测（同 D1） ============
+function detectPoints() {
+  const need = TARGET - pts.length;
+  if (need <= 0) return;
+  const n = Math.min(jsfeat.fast_corners.detect(imgU8, cornerPool, BORDER), cornerPool.length);
+  const cols = Math.ceil(procW / CELL);
+  const best = new Map(), occupied = new Set();
+  for (const p of pts) occupied.add((p.y / CELL | 0) * cols + (p.x / CELL | 0));
+  for (let i = 0; i < n; i++) {
+    const c = cornerPool[i], ci = (c.y / CELL | 0) * cols + (c.x / CELL | 0);
+    if (occupied.has(ci)) continue;
+    const cur = best.get(ci);
+    if (cur === undefined || cornerPool[cur].score < c.score) best.set(ci, i);
+  }
+  const picked = [...best.values()].sort((a, b) => cornerPool[b].score - cornerPool[a].score);
+  for (let i = 0; i < Math.min(need, picked.length); i++) {
+    const c = cornerPool[picked[i]];
+    pts.push({ x: c.x, y: c.y, px: c.x, py: c.y, age: 0, trail: [[c.x, c.y]], inlier: true });
+  }
+}
+
+// ============ 8 点法 + RANSAC ============
+// 归一化坐标输入 nx1,ny1,nx2,ny2（长度 n）
+function buildAtA(x1, y1, x2, y2, idx, m) {
+  const AtA = new Float64Array(81);
+  for (let k = 0; k < m; k++) {
+    const i = idx[k];
+    const a = x1[i], b = y1[i], c = x2[i], d = y2[i];
+    const r = [c*a, c*b, c, d*a, d*b, d, a, b, 1];
+    for (let p = 0; p < 9; p++) for (let q = 0; q <= p; q++) AtA[p*9+q] += r[p]*r[q];
+  }
+  for (let p = 0; p < 9; p++) for (let q = p+1; q < 9; q++) AtA[p*9+q] = AtA[q*9+p];
+  return AtA;
+}
+function nullVector9(AtA) {
+  const A = new jsfeat.matrix_t(9, 9, jsfeat.F64_t | jsfeat.C1_t);
+  A.data.set(AtA);
+  const V = new jsfeat.matrix_t(9, 9, jsfeat.F64_t | jsfeat.C1_t);
+  jsfeat.linalg.eigenVV(A, V);
+  return V.data.slice(72, 81);   // 最小特征值向量 = 末行
+}
+function sampson(E, x1, y1, x2, y2) {
+  // x2ᵀ E x1
+  const Ex1 = [E[0]*x1+E[1]*y1+E[2], E[3]*x1+E[4]*y1+E[5], E[6]*x1+E[7]*y1+E[8]];
+  const Etx2 = [E[0]*x2+E[3]*y2+E[6], E[1]*x2+E[4]*y2+E[7], E[2]*x2+E[5]*y2+E[8]];
+  const r = x2*Ex1[0] + y2*Ex1[1] + Ex1[2];
+  const denom = Ex1[0]*Ex1[0] + Ex1[1]*Ex1[1] + Etx2[0]*Etx2[0] + Etx2[1]*Etx2[1];
+  return denom > 1e-12 ? Math.abs(r) / Math.sqrt(denom) : 1e9;
+}
+function estimateE(x1, y1, x2, y2, n) {
+  const all = Array.from({length: n}, (_, i) => i);
+  let bestE = null, bestCount = 0, bestMask = null;
+  for (let it = 0; it < RANSAC_ITER; it++) {
+    // 采样 8 点
+    const idx = [];
+    while (idx.length < 8) { const k = all[Math.random()*n | 0]; if (!idx.includes(k)) idx.push(k); }
+    const e = nullVector9(buildAtA(x1, y1, x2, y2, idx, 8));
+    let cnt = 0; const mask = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      if (sampson(e, x1[i], y1[i], x2[i], y2[i]) < RANSAC_TH) { mask[i] = 1; cnt++; }
+    }
+    if (cnt > bestCount) { bestCount = cnt; bestE = e; bestMask = mask; }
+  }
+  if (!bestE || bestCount < MIN_INLIERS || bestCount / n < MIN_INLIER_RATIO) return null;
+  // 内点重估
+  const inlIdx = [];
+  for (let i = 0; i < n; i++) if (bestMask[i]) inlIdx.push(i);
+  const E = nullVector9(buildAtA(x1, y1, x2, y2, inlIdx, inlIdx.length));
+  return { E, inliers: bestCount, mask: bestMask };
+}
+
+// ============ E 分解 + 手性 ============
+function decomposeE(Ein) {
+  // SVD: E = U diag(w) Vᵀ → 强制 (1,1,0)
+  const A = new jsfeat.matrix_t(3, 3, jsfeat.F64_t | jsfeat.C1_t);
+  A.data.set(Ein);
+  const W = new jsfeat.matrix_t(1, 3, jsfeat.F64_t | jsfeat.C1_t);
+  const U = new jsfeat.matrix_t(3, 3, jsfeat.F64_t | jsfeat.C1_t);
+  const V = new jsfeat.matrix_t(3, 3, jsfeat.F64_t | jsfeat.C1_t);
+  jsfeat.linalg.svd_decompose(A, W, U, V, 0);
+  const Ud = [...U.data], Vd = [...V.data];
+  const Wrot = [0,-1,0, 1,0,0, 0,0,1];
+  const Vt = tr33(Vd);
+  let R1 = mul33(mul33(Ud, Wrot), Vt);
+  let R2 = mul33(mul33(Ud, tr33(Wrot)), Vt);
+  if (det33(R1) < 0) R1 = neg33(R1);
+  if (det33(R2) < 0) R2 = neg33(R2);
+  const t = [Ud[2], Ud[5], Ud[8]];   // U 第 3 列
+  return [{R: R1, t}, {R: R1, t: [-t[0],-t[1],-t[2]]}, {R: R2, t}, {R: R2, t: [-t[0],-t[1],-t[2]]}];
+}
+// 线性三角化（P1=[I|0], P2=[R|t]），返回深度符号计数
+function cheiralityScore(R, t, x1, y1, x2, y2, mask, n) {
+  const P2 = [R[0],R[1],R[2],t[0], R[3],R[4],R[5],t[1], R[6],R[7],R[8],t[2]];
+  let good = 0, tested = 0;
+  for (let i = 0; i < n && tested < 20; i++) {
+    if (!mask[i]) continue;
+    tested++;
+    // A 4×4：x×P 叉乘行
+    const A = [
+      -1, 0, x1[i], 0,  -1, 0, 0, 0,  x1[i], 0, 0, 0,  0, 0, 0, 0  // 占位，下面直接构造 AtA
+    ];
+    // 行：x1*P1row2? P1=[I|0]: rows r1=[1,0,0,0],r2=[0,1,0,0],r3=[0,0,1,0]
+    const rows = [
+      [ -1, 0, x1[i], 0 ],           // x1*r3 - r1
+      [ 0, -1, y1[i], 0 ],           // y1*r3 - r2
+      [ x2[i]*P2[8]-P2[0], x2[i]*P2[9]-P2[1], x2[i]*P2[10]-P2[2], x2[i]*P2[11]-P2[3] ],
+      [ y2[i]*P2[8]-P2[4], y2[i]*P2[9]-P2[5], y2[i]*P2[10]-P2[6], y2[i]*P2[11]-P2[7] ]
+    ];
+    const AtA = new Float64Array(16);
+    for (const r of rows) for (let p = 0; p < 4; p++) for (let q = 0; q <= p; q++) AtA[p*4+q] += r[p]*r[q];
+    for (let p = 0; p < 4; p++) for (let q = p+1; q < 4; q++) AtA[p*4+q] = AtA[q*4+p];
+    const Am = new jsfeat.matrix_t(4, 4, jsfeat.F64_t | jsfeat.C1_t); Am.data.set(AtA);
+    const Vm = new jsfeat.matrix_t(4, 4, jsfeat.F64_t | jsfeat.C1_t);
+    jsfeat.linalg.eigenVV(Am, Vm);
+    const X = Vm.data.slice(12, 16);  // 最小特征向量
+    const z1 = X[2];                                  // cam1 深度 = Z
+    const z2 = R[6]*X[0] + R[7]*X[1] + R[8]*X[2] + t[0+2]*X[3];  // cam2 深度（注意 t 在 P2 第 4 列，齐次 w=X[3]）
+    if (z1 * X[3] > 0 && z2 > 0) good++;              // 齐次符号归一
+  }
+  return good;
+}
+function recoverPose(E, x1, y1, x2, y2, mask, n) {
+  const cands = decomposeE(E);
+  let best = null, bestScore = -1;
+  for (const c of cands) {
+    const s = cheiralityScore(c.R, c.t, x1, y1, x2, y2, mask, n);
+    if (s > bestScore) { bestScore = s; best = c; }
+  }
+  return best;
+}
+
+// ============ IMU（松耦合：仅丢踪外推） ============
+function onOrientation(e) {
+  if (e.alpha === null) return;
+  const d = Math.PI / 360;
+  const a = e.alpha * d, b = e.beta * d, g = e.gamma * d;
+  // ZXY 欧拉 → 四元数
+  const ca = Math.cos(a), sa = Math.sin(a), cb = Math.cos(b), sb = Math.sin(b), cg = Math.cos(g), sg = Math.sin(g);
+  imuQ = [
+    ca*cb*cg - sa*sb*sg,   // w
+    sa*cb*cg + ca*sb*sg,   // x
+    ca*sb*cg - sa*cb*sg,   // y
+    ca*cb*sg + sa*sb*cg    // z
+  ];
+  imuReady = true;
+}
+function imuDeltaR() {
+  if (!imuQ || !imuQPrev) return null;
+  const [w1,x1,y1,z1] = imuQPrev, [w2,x2,y2,z2] = imuQ;
+  // delta = q2 * q1⁻¹
+  const w = w2*w1 + x2*x1 + y2*y1 + z2*z1;
+  const x = x2*w1 - w2*x1 + y2*z1 - z2*y1;
+  const y = y2*w1 - w2*y1 + z2*x1 - x2*z1;
+  const z = z2*w1 - w2*z1 + x2*y1 - y2*x1;
+  // 四元数 → 旋转矩阵
+  return [
+    1-2*(y*y+z*z), 2*(x*y-w*z),   2*(x*z+w*y),
+    2*(x*y+w*z),   1-2*(x*x+z*z), 2*(y*z-w*x),
+    2*(x*z-w*y),   2*(y*z+w*x),   1-2*(x*x+y*y)
+  ];
+}
+if (window.DeviceOrientationEvent) {
+  if ('ontouchstart' in window && typeof DeviceOrientationEvent.requestPermission === 'function') {
+    // iOS 权限（本链路 Android-only，防御性保留）
+  } else {
+    window.addEventListener('deviceorientationabsolute', onOrientation, true);
+    window.addEventListener('deviceorientation', onOrientation, true);
+  }
+}
+
+// ============ 主循环 ============
+function loop(t) {
+  if (!running) return;
+  requestAnimationFrame(loop);
+  if (video.readyState < 2 || !video.videoWidth) return;
+  const t0 = performance.now();
+
+  procCtx.drawImage(video, 0, 0, procW, procH);
+  jsfeat.imgproc.grayscale(procCtx.getImageData(0, 0, procW, procH).data, procW, procH, imgU8);
+  [pyrPrev, pyrCurr] = [pyrCurr, pyrPrev];
+  pyrCurr.build(imgU8, false);
+
+  // LK 跟踪（保留前后坐标做位姿）
+  let corresp = null;
+  if (pts.length > 0 && lastT > 0) {
+    for (let i = 0; i < pts.length; i++) {
+      xyPrev[i*2] = pts[i].x; xyPrev[i*2+1] = pts[i].y;
+      pts[i].px = pts[i].x; pts[i].py = pts[i].y;
+    }
+    jsfeat.optical_flow_lk.track(pyrPrev, pyrCurr, xyPrev, xyCurr, pts.length, LK_WIN, LK_ITER, lkStatus, LK_EPS, LK_EIGEN);
+    const alive = [];
+    for (let i = 0; i < pts.length; i++) {
+      if (lkStatus[i] === 1) {
+        const p = pts[i];
+        p.x = xyCurr[i*2]; p.y = xyCurr[i*2+1]; p.age++;
+        p.trail.push([p.x, p.y]);
+        if (p.trail.length > TRAIL) p.trail.shift();
+        alive.push(p);
+      }
+    }
+    pts = alive;
+    corresp = true;
+  }
+  if (pts.length < REDETECT) { detectPoints(); redetects++; }
+
+  // ---- 位姿估计 ----
+  let rotDeg = null, tDir = null, inliers = 0;
+  const dRimu = imuDeltaR();                       // IMU 帧间旋转（松耦合备用）
+  const imuRot = dRimu ? rotAngle(dRimu) : null;
+  if (corresp && pts.length >= MIN_PTS_POSE) {
+    const n = pts.length;
+    const x1 = new Float64Array(n), y1 = new Float64Array(n), x2 = new Float64Array(n), y2 = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      x1[i] = (pts[i].px - cx) / focal; y1[i] = (pts[i].py - cy) / focal;
+      x2[i] = (pts[i].x  - cx) / focal; y2[i] = (pts[i].y  - cy) / focal;
+    }
+    const est = estimateE(x1, y1, x2, y2, n);
+    if (est) {
+      inliers = est.inliers;
+      const sol = recoverPose(est.E, x1, y1, x2, y2, est.mask, n);
+      if (sol) {
+        rotDeg = rotAngle(sol.R); tDir = sol.t;
+        // 物理上限门控 + IMU 交叉校验（松耦合核心：视觉异常帧不信视觉）
+        const ROT_CAP = 3.0;                        // °/帧
+        const imuDisagree = imuRot !== null && Math.abs(rotDeg - imuRot) > 2.0;
+        if (rotDeg > ROT_CAP || imuDisagree) {
+          if (dRimu) { poseR = mul33(poseR, tr33(dRimu)); }  // 有 IMU 则用 IMU 旋转
+          rejects++;                                          // 平移帧丢弃（噪声源）
+          tDir = null; rotDeg = imuRot;
+        } else {
+          const Rt = tr33(sol.R);
+          poseR = mul33(poseR, Rt);
+          const dt = mv33(poseR, sol.t);
+          poseT = [poseT[0]-dt[0], poseT[1]-dt[1], poseT[2]-dt[2]];
+          path.push([poseT[0], poseT[2]]);
+          if (path.length > 600) path.shift();
+        }
+        state = 'TRACK';
+        for (let i = 0; i < n; i++) pts[i].inlier = !!est.mask[i];
+      } else state = 'LOST';
+    } else state = 'LOST';
+  } else if (corresp) state = 'LOST';
+
+  // ---- IMU 丢踪外推 ----
+  if ((state === 'LOST') && dRimu) {
+    poseR = mul33(poseR, tr33(dRimu));
+    state = 'IMU';
+  }
+  imuQPrev = imuQ;
+
+  // ---- 静止抖动统计（中位流速 < 0.3px 视为静止） ----
+  if (state === 'TRACK' && rotDeg !== null) {
+    let flows = [];
+    for (const p of pts) if (p.inlier) flows.push(Math.hypot(p.x - p.px, p.y - p.py));
+    flows.sort((a, b) => a - b);
+    const med = flows.length ? flows[flows.length >> 1] : 99;
+    if (med < 0.3) {
+      jitWin.push(rotDeg);
+      if (jitWin.length > 90) jitWin.shift();
+    }
+  }
+  let jit = null;
+  if (jitWin.length > 20) {
+    const mu = jitWin.reduce((a, b) => a + b, 0) / jitWin.length;
+    jit = Math.sqrt(jitWin.reduce((a, b) => a + (b - mu) * (b - mu), 0) / jitWin.length);
+  }
+
+  const ms = performance.now() - t0;
+
+  // ---- 渲染叠加 ----
+  octx.clearRect(0, 0, procW, procH);
+  octx.lineWidth = 1.2;
+  for (const p of pts) {
+    const col = p.age < 2 ? '#ffb829' : (p.inlier ? '#2ee6a8' : '#ff5a5a');
+    if (p.trail.length > 1) {
+      octx.strokeStyle = p.inlier ? 'rgba(128,82,255,.8)' : 'rgba(255,90,90,.7)';
+      octx.beginPath();
+      octx.moveTo(p.trail[0][0], p.trail[0][1]);
+      for (let i = 1; i < p.trail.length; i++) octx.lineTo(p.trail[i][0], p.trail[i][1]);
+      octx.stroke();
+    }
+    octx.fillStyle = col;
+    octx.beginPath(); octx.arc(p.x, p.y, 2.2, 0, 6.2832); octx.fill();
+  }
+
+  // ---- 轨迹俯视图 ----
+  pctx.fillStyle = '#0a0a0a'; pctx.fillRect(0, 0, 360, 360);
+  pctx.strokeStyle = '#1c1c1c';
+  for (let g = 0; g <= 360; g += 60) { pctx.beginPath(); pctx.moveTo(g, 0); pctx.lineTo(g, 360); pctx.stroke(); pctx.beginPath(); pctx.moveTo(0, g); pctx.lineTo(360, g); pctx.stroke(); }
+  if (path.length > 1) {
+    let minX = 1e9, maxX = -1e9, minZ = 1e9, maxZ = -1e9;
+    for (const [x, z] of path) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z); }
+    const span = Math.max(maxX - minX, maxZ - minZ, 1e-6) * 1.2;
+    const mx = (minX + maxX) / 2, mz = (minZ + maxZ) / 2;
+    const sx = v => 180 + (v - mx) / span * 320, sz = v => 180 + (v - mz) / span * 320;
+    pctx.strokeStyle = '#8052ff'; pctx.lineWidth = 2;
+    pctx.beginPath(); pctx.moveTo(sx(path[0][0]), sz(path[0][1]));
+    for (const [x, z] of path) pctx.lineTo(sx(x), sz(z));
+    pctx.stroke();
+    // 起点绿、当前点白
+    pctx.fillStyle = '#2ee6a8';
+    pctx.beginPath(); pctx.arc(sx(path[0][0]), sz(path[0][1]), 4, 0, 6.2832); pctx.fill();
+    pctx.fillStyle = '#fff';
+    pctx.beginPath(); pctx.arc(sx(poseT[0]), sz(poseT[2]), 4, 0, 6.2832); pctx.fill();
+  }
+
+  // ---- HUD ----
+  if (lastT > 0) {
+    fpsWin.push(1000 / Math.max(1, t - lastT));
+    if (fpsWin.length > 30) fpsWin.shift();
+    const fps = fpsWin.reduce((a, b) => a + b, 0) / fpsWin.length;
+    hFps.textContent = fps.toFixed(0);
+    hFps.className = 'v ' + (fps >= 20 ? 'good' : fps >= 12 ? 'warn' : 'bad');
+  }
+  lastT = t;
+  hMs.textContent = ms.toFixed(1);
+  hPts.textContent = pts.length;
+  hInl.textContent = state === 'TRACK' ? inliers : '–';
+  hInl.className = 'v ' + (state === 'TRACK' ? 'good' : 'bad');
+  hJit.textContent = jit !== null ? jit.toFixed(2) : '–';
+  hJit.className = 'v ' + (jit !== null && jit < 1 ? 'good' : 'warn');
+  pState.textContent = state === 'TRACK' ? '跟踪中' : state === 'IMU' ? 'IMU 外推' : state === 'LOST' ? '丢失' : '初始化';
+  pState.className = state === 'TRACK' ? 'stTrack' : state === 'IMU' ? 'stImu' : 'stLost';
+  pRot.textContent = rotDeg !== null ? rotDeg.toFixed(2) : '–';
+  pT.textContent = tDir ? tDir.map(v => v.toFixed(2)).join(', ') : '–';
+  pPos.textContent = poseT.map(v => v.toFixed(2)).join(', ');
+  pImu.textContent = imuReady ? '已连接' : '无数据';
+  pImu.className = imuReady ? '' : 'bad';
+  pRej.textContent = rejects;
+
+  // ---- 日志 ----
+  if (window.__log.length < 3600) {
+    window.__log.push({ t: +t.toFixed(1), state, rot: rotDeg, td: tDir, pos: [...poseT], inl: inliers, pts: pts.length, ms: +ms.toFixed(1) });
+  }
+}
+
+// ============ 输入源 ============
+function startLoop() {
+  if (running) return;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw) return;
+  procW = PROC_W; procH = Math.round(PROC_W * vh / vw) & ~1;
+  allocStructs(); resetAll();
+  running = true; lastT = 0;
+  requestAnimationFrame(loop);
+}
+function setMsg(text, err) { msg.textContent = text; msg.className = err ? 'err' : ''; }
+
+$('btnCam').onclick = async () => {
+  setMsg('请求摄像头权限…');
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } }, audio: false
+    });
+    video.srcObject = stream; await video.play();
+    setMsg('运行中。缓慢平移 1m 往返，观察轨迹图连续性；再静止 5 秒看抖动σ。');
+    startLoop();
+  } catch (e) { setMsg('摄像头失败：' + e.name, true); }
+};
+$('btnFile').onclick = () => $('fileIn').click();
+$('fileIn').onchange = (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  if (video.srcObject) { video.srcObject.getTracks().forEach(t => t.stop()); video.srcObject = null; }
+  video.src = URL.createObjectURL(f); video.loop = true;
+  video.play().then(() => { setMsg('回放模式：' + f.name); startLoop(); });
+};
+$('btnReset').onclick = () => { resetAll(); setMsg('位姿已重置。'); };
+</script>
+</body>
+</html>
