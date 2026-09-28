@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="format-detection" content="telephone=no">
+<meta name="robots" content="noindex">
+<title>AR SLAM 测试中心</title>
+<style>
+:root{
+  --void:#000;--bone:#fff;--ash:#9a9a9a;--iris:#8052ff;--verdant:#15846e;--saffron:#ffb829;
+  --font:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--void);color:var(--bone);font-family:var(--font);padding:24px 20px 64px;max-width:640px;margin:0 auto;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+header{padding:24px 0 8px}
+h1{font-size:22px;font-weight:700;letter-spacing:.02em}
+.sub{color:var(--ash);font-size:13px;margin-top:6px;line-height:1.6}
+.milestone{display:block;border:1px solid #222;border-radius:14px;padding:18px;margin-top:16px;transition:border-color .25s}
+a.milestone:active{border-color:var(--iris)}
+.row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.name{font-size:16px;font-weight:600}
+.badge{font-size:12px;font-weight:600;padding:4px 12px;border-radius:12px;white-space:nowrap}
+.badge.todo{color:var(--ash);border:1px solid #333}
+.badge.doing{color:var(--saffron);border:1px solid var(--saffron)}
+.badge.done{color:var(--verdant);border:1px solid var(--verdant)}
+.desc{color:var(--ash);font-size:13px;line-height:1.7;margin-top:10px}
+.accept{color:var(--mist,#bdbdbd);font-size:12px;margin-top:8px;line-height:1.6}
+.accept::before{content:"验收 ▸ ";color:var(--iris)}
+footer{margin-top:40px;color:var(--ash);font-size:12px;line-height:1.8}
+footer a{border-bottom:1px solid #333}
+</style>
+</head>
+<body>
+<header>
+  <h1>AR SLAM 测试中心</h1>
+  <p class="sub">自研 WASM SLAM 里程碑真机测试入口（D1~D5）。目标设备：Reno14 系统浏览器；对照基准：Quest 3 WebXR。请用手机浏览器打开各测试项。</p>
+</header>
+
+<main>
+  <a class="milestone" href="d1-features.html">
+    <div class="row"><span class="name">D1 · 特征追踪可视化</span><span class="badge todo">待建设</span></div>
+    <p class="desc">getUserMedia 降采样 VGA → FAST 角点 + LK 光流，特征点轨迹叠加显示。纯 JS 原型（jsfeat 解构起步）。</p>
+    <p class="accept">≥20fps；缓慢平移时轨迹稳定、不集体跳变</p>
+  </a>
+
+  <div class="milestone">
+    <div class="row"><span class="name">D2 · 相对位姿 + IMU 松耦合</span><span class="badge todo">待建设</span></div>
+    <p class="desc">本质矩阵 + 8点法 + RANSAC 求帧间 6DoF 位姿；IMU 松耦合（姿态先验 / 尺度约束 / 丢踪外推）；预测外推消抖动。帧率不足则热模块转 Rust/WASM。</p>
+    <p class="accept">桌面平移 1m 往返位姿连续无跳变；静止抖动量级实测记录</p>
+  </div>
+
+  <div class="milestone">
+    <div class="row"><span class="name">D3 · 平面锚定 + 丢踪保持</span><span class="badge todo">待建设</span></div>
+    <p class="desc">稀疏点云三角化 → RANSAC 平面拟合 → 点按放置锚点；追踪丢失时锚定物钉住不消失（IMU 外推），恢复后重锚。</p>
+    <p class="accept">走开 2~3m 回看偏移可接受（参照：Quest 3 困难环境 APE&gt;10cm）；遮挡 2s 恢复或优雅提示</p>
+  </div>
+
+  <div class="milestone">
+    <div class="row"><span class="name">D4 · 沙盘集成 + 降级链</span><span class="badge todo">待建设</span></div>
+    <p class="desc">paddy-diorama 沙盘接入锚定；降级链全通（SLAM → 陀螺仪 3DoF → 纯 3D）。</p>
+    <p class="accept">Reno14 沙盘 AR 全流程演示，≥30fps（不达标走降级梯）</p>
+  </div>
+
+  <div class="milestone">
+    <div class="row"><span class="name">D5 · Quest 3 对照基准</span><span class="badge todo">待建设</span></div>
+    <p class="desc">同场景 Quest 3 WebXR vs Reno14 自研，漂移/抖动量化对比表。</p>
+    <p class="accept">产出数据表（兼路演叙事素材）</p>
+  </div>
+</main>
+
+<footer>
+  设计约束：视觉为主 + IMU 松耦合（不紧耦合 VIO）· 最小内核（砍回环/全局 BA）· 预测外推消抖动 · 降级链兜底<br>
+  <a href="/">← 返回主页</a>
+</footer>
+</body>
+</html>
