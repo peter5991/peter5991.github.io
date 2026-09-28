@@ -117,8 +117,15 @@ let poseR = I3(), poseT = [0,0,0], path = [];
 let state = 'INIT';
 let jitWin = [];                                 // 静止抖动窗口
 // IMU
-let imuQ = null, imuQPrev = null, imuReady = false;
+let imuQ = null, imuQPrev = null, imuReady = false, imuViaGyro = false;
 let imuEvtCnt = 0, imuNullCnt = 0, motionEvtCnt = 0;   // 诊断计数
+// 四元数小工具（[w,x,y,z]）
+const qmul = (a, b) => [
+  a[0]*b[0]-a[1]*b[1]-a[2]*b[2]-a[3]*b[3],
+  a[0]*b[1]+a[1]*b[0]+a[2]*b[3]-a[3]*b[2],
+  a[0]*b[2]-a[1]*b[3]+a[2]*b[0]+a[3]*b[1],
+  a[0]*b[3]+a[1]*b[2]-a[2]*b[1]+a[3]*b[0]];
+const qnorm = q => { const n = Math.hypot(q[0],q[1],q[2],q[3]) || 1; return [q[0]/n,q[1]/n,q[2]/n,q[3]/n]; };
 // 日志（离线分析用）
 window.__log = [];
 window.__dump = () => JSON.stringify(window.__log);
@@ -316,7 +323,23 @@ if (window.DeviceOrientationEvent) {
   }
 }
 if (window.DeviceMotionEvent) {
-  window.addEventListener('devicemotion', () => { motionEvtCnt++; }, true);
+  // OPPO 系统浏览器不发 deviceorientation 但发 devicemotion：
+  // 陀螺仪 rotationRate 积分成相对姿态增量（丢踪外推只需相对旋转，绝对姿态不要）
+  window.addEventListener('devicemotion', (e) => {
+    motionEvtCnt++;
+    const r = e.rotationRate;
+    if (!r || r.alpha === null) return;
+    if (imuEvtCnt > 0 && imuReady) return;            // orientation 可用时不抢
+    const dt = e.interval > 0 ? e.interval / 1000 : 0.016;
+    if (!imuQ) imuQ = [1, 0, 0, 0];
+    // 小角积分：dq ≈ [1, β·dt/2, γ·dt/2, α·dt/2]（设备轴：α绕Z β绕X γ绕Y）
+    const dq = [1,
+      r.beta  * Math.PI / 360 * dt,
+      r.gamma * Math.PI / 360 * dt,
+      r.alpha * Math.PI / 360 * dt];
+    imuQ = qnorm(qmul(imuQ, dq));
+    imuReady = true; imuViaGyro = true;
+  }, true);
 }
 
 // ============ 主循环 ============
@@ -491,7 +514,7 @@ function loop(t) {
   pT.textContent = tDir ? tDir.map(v => v.toFixed(2)).join(', ') : '–';
   pPos.textContent = poseT.map(v => v.toFixed(2)).join(', ');
   // IMU 诊断显示：区分"事件根本没发"与"事件发了但数据为空"
-  pImu.textContent = imuReady ? `已连接(${imuEvtCnt})`
+  pImu.textContent = imuReady ? (imuViaGyro ? `陀螺仪(${motionEvtCnt})` : `已连接(${imuEvtCnt})`)
     : imuEvtCnt > 0 ? `事件${imuEvtCnt}次但数据空`
     : motionEvtCnt > 0 ? `仅motion(${motionEvtCnt})` : '无事件(浏览器不支持?)';
   pImu.className = imuReady ? '' : 'bad';
