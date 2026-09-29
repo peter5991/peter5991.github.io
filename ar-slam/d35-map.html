@@ -1,0 +1,1574 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex">
+<link rel="icon" href="data:,">
+<title>D3.5 · 空间持久化 + 多平面地图</title>
+<style>
+:root{--void:#000;--bone:#fff;--ash:#9a9a9a;--iris:#8052ff;--saffron:#ffb829;--verdant:#2ee6a8;--red:#ff5a5a;--cyan:#4dd8ff}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--void);color:var(--bone);font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;-webkit-font-smoothing:antialiased;min-height:100vh;display:flex;flex-direction:column}
+header{padding:14px 16px 10px;display:flex;align-items:baseline;justify-content:space-between}
+h1{font-size:16px;font-weight:700}
+header a{font-size:12px;color:var(--ash)}
+#stage{position:relative;width:100%;background:#0a0a0a;overflow:hidden;text-align:center}
+#vpWrap{position:relative;display:inline-block;line-height:0;max-width:100%}
+#cam{display:block;width:100%;height:100%}
+/* pan-y：单指竖滑=原生页面滚动；双指捏合不由浏览器处理 → 归 JS 变焦 */
+#overlay{position:absolute;inset:0;width:100%;height:100%;touch-action:pan-y}
+#hud{display:flex;border-top:1px solid #1c1c1c;border-bottom:1px solid #1c1c1c;flex-wrap:wrap}
+#hud .cell{flex:1;min-width:14%;padding:8px 2px;text-align:center}
+#hud .v{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums}
+#hud .k{font-size:10px;color:var(--ash);margin-top:2px}
+.good{color:var(--verdant)}.warn{color:var(--saffron)}.bad{color:var(--red)}
+#poseBar{display:flex;gap:10px;padding:10px 16px;align-items:stretch}
+#pathCv{flex:0 0 44%;background:#0a0a0a;border:1px solid #1c1c1c;border-radius:10px}
+#poseInfo{flex:1;font-size:12px;color:var(--mist,#bdbdbd);line-height:1.9}
+#poseInfo b{color:var(--bone);font-variant-numeric:tabular-nums}
+.stTrack{color:var(--verdant)}.stImu{color:var(--saffron)}.stLost{color:var(--red)}
+#controls{display:flex;gap:10px;padding:6px 16px 12px}
+button{flex:1;background:#161616;color:var(--bone);border:1px solid #2c2c2c;border-radius:12px;padding:12px 8px;font-size:13px;font-weight:600;font-family:inherit}
+button:active{border-color:var(--iris)}
+button.primary{background:var(--iris);border-color:var(--iris)}
+#msg{padding:0 16px 10px;font-size:12px;color:var(--ash);line-height:1.7}
+#msg.err{color:var(--red)}
+#zoomBar,#resBar{display:flex;gap:8px;padding:0 16px 10px;align-items:center}
+#zoomBar[hidden],#resBar[hidden]{display:none}
+#zoomBar button,#resBar button{flex:1;padding:8px 4px;font-size:12px}
+#zoomBar button.on,#resBar button.on{border-color:var(--verdant);color:var(--verdant)}
+#zoomBar .zoomInfo,#resBar .zoomInfo{flex:1.6;font-size:11px;color:var(--ash);line-height:1.4}
+footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-height:1.6}
+/* 手机适配：数据面板纵向堆叠（轨迹图缩到上方小图，数据全宽），HUD 两行三列 */
+@media (max-width: 640px) {
+  #poseBar{flex-direction:column;align-items:center}
+  #poseInfo{width:100%;line-height:2}
+  #pathCv{flex:none;width:min(60vw,220px);height:auto;order:2}
+  #hud .cell{min-width:30%}
+  #hud .v{font-size:16px}
+  #controls{flex-wrap:wrap}
+  #controls button{flex:1 1 40%}
+  #zoomBar,#resBar{flex-wrap:wrap}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>D3.5 · 空间持久化 + 多平面地图</h1>
+  <a href="/ar-slam/">← 测试中心</a>
+</header>
+
+<div id="stage">
+  <div id="vpWrap">
+    <video id="cam" playsinline muted autoplay></video>
+    <canvas id="overlay"></canvas>
+  </div>
+</div>
+
+<div id="hud">
+  <div class="cell"><div class="v" id="hFps">–</div><div class="k">FPS</div></div>
+  <div class="cell"><div class="v" id="hMs">–</div><div class="k">处理 ms</div></div>
+  <div class="cell"><div class="v" id="hPts">–</div><div class="k">跟踪点</div></div>
+  <div class="cell"><div class="v" id="hCloud">–</div><div class="k">地图点</div></div>
+  <div class="cell"><div class="v" id="hPlane">–</div><div class="k">平面数</div></div>
+  <div class="cell"><div class="v" id="hAnch">0</div><div class="k">锚点</div></div>
+  <div class="cell"><div class="v" id="hRec">0</div><div class="k">恢复</div></div>
+</div>
+
+<div id="poseBar">
+  <canvas id="pathCv" width="360" height="360"></canvas>
+  <div id="poseInfo">
+    状态 <b id="pState">–</b><br>
+    尺度 s <b id="pS">–</b> · 焦距 f <b id="pF">–</b> · 视场 <b id="pFov">–</b>° · 暗帧 <b id="pDark">0</b><br>
+    重力-法向 <b id="pGrav">–</b>°<br>
+    位置(相对) <b id="pPos">0, 0, 0</b><br>
+    丢弃帧 <b id="pRej">0</b> · 静止抖动σ <b id="pJit">–</b>°<br>
+    IMU <b id="pImu">未连接</b><br>
+    镜头 <b id="pZoom">–</b>
+  </div>
+</div>
+
+<div id="controls">
+  <button class="primary" id="btnCam">启动摄像头</button>
+  <button id="btnFile">回放视频文件</button>
+  <button id="btnReset">重置全部</button>
+  <input type="file" id="fileIn" accept="video/*" hidden>
+</div>
+
+<div id="zoomBar" hidden></div>
+
+<div id="resBar" hidden></div>
+
+<p id="msg">验收四步：①原地缓慢转动手机几秒（焦距标定）；②横移扫描地面/桌面/墙面——彩色凸包+网格逐渐成形（每平面一色）；③<b>转身看向别处再转回</b>——彩色区域应仍在原位不消失；④点按彩色区域内部放方块，走远 2~3m 回看钉住。</p>
+<footer>jsfeat (MIT) · D2 位姿链 + 尺度传播稀疏点云 → <b>持久地图（出视野不丢，空间哈希去重）</b>+ <b>多平面分割（重力多簇返回 + 顺序 RANSAC 提取，独立凸包）</b>+ <b>面内 Delaunay 低模网格（≤160 顶点/面，随新点云重三角化）</b>→ 射线×最近平面凸包放锚点 · 丢踪=KF 快照 LK/最近邻双路恢复 · 暗帧门控 · 陀螺零偏估计</footer>
+
+<script src="vendor/jsfeat-min.js"></script>
+<script>
+"use strict";
+// ============ 参数 ============
+const PROC_W = 320, TARGET = 150, REDETECT = 90, FAST_TH = 20, BORDER = 6, CELL = 16, TRAIL = 14, MAX = 400;
+const LK_LEVELS = 3, LK_WIN = 15, LK_ITER = 20, LK_EPS = 0.01, LK_EIGEN = 0.001;
+const MIN_PTS_POSE = 40;
+const RANSAC_ITER = 64, RANSAC_TH = 0.004, MIN_INLIERS = 15, MIN_INLIER_RATIO = 0.4;
+const FOCAL_RATIO = 1.0;
+const PARALLAX_TH = 2.0;
+// D3 新增
+const SCALE_MIN = 0.05, SCALE_MAX = 20;      // 尺度传播可信域（只挡三角化崩坏的荒谬值；基线长度随场景深度自然变化）
+const SCALE_MIN_OLD = 8;                     // 尺度估计最少旧点
+const PLANE_ITER = 80, PLANE_MIN_INL = 20, PLANE_INL_RATIO = 0.45, PLANE_THR_K = 0.03; // 阈值=K×中位场景距离
+const GRAV_MIN_VOTES = 8;                    // 重力投票路径最少票数（1-DOF 投票，低纹理地面也达标）
+const REPRO_TH = 3.0;                        // 恢复重投影中位误差阈值 px
+const REC_MIN_PAIRS = 25, REC_MIN_W3D = 8;   // 恢复最少匹配/带3D匹配
+const DARK_TH = 15;                          // 暗帧门控（MenthaAR 思路）：均值亮度低于此暂停视觉
+const NN_MATCH_PX = 4;                       // 恢复最近邻匹配半径
+// D3.5：持久地图 + 多平面
+const MAP_MERGE_K = 0.02;                    // 地图合并半径 = K×中位场景距离（近距去重）
+const MAP_MAX = 3000;                        // 地图点上限（封顶后提示，不静默丢）
+const MAX_PLANES = 4;                        // 平面槽位上限
+const PLANE_MATCH_COS = 0.94;                // 同平面判定：法向夹角 <~20° 且偏移差 <2thr
+const MESH_MAX_V = 160;                      // 低模：每平面网格顶点上限（面内网格降采样）
+const MESH_RETRI_MIN = 12;                   // 平面内点增量 ≥N 或距上次 ≥1s 才重三角化
+const PLANE_COLORS = ['#4dd8ff', '#ffb829', '#8052ff', '#2ee6a8'];   // 平面 i 的显示色
+
+// ============ DOM ============
+const video = document.getElementById('cam');
+const overlay = document.getElementById('overlay'), octx = overlay.getContext('2d');
+const pathCv = document.getElementById('pathCv'), pctx = pathCv.getContext('2d');
+const msg = document.getElementById('msg');
+const $ = id => document.getElementById(id);
+const pState = $('pState'), pS = $('pS'), pPos = $('pPos'), pImu = $('pImu'), pRej = $('pRej'),
+      pDark = $('pDark'), pGrav = $('pGrav'), pJit = $('pJit'), pF = $('pF');
+
+// ============ 3×3 矩阵小工具（行主序数组） ============
+const I3 = () => [1,0,0, 0,1,0, 0,0,1];
+const mul33 = (A,B) => { const C = new Array(9);
+  for(let i=0;i<3;i++)for(let j=0;j<3;j++) C[i*3+j] = A[i*3]*B[j] + A[i*3+1]*B[3+j] + A[i*3+2]*B[6+j];
+  return C; };
+const tr33 = A => [A[0],A[3],A[6], A[1],A[4],A[7], A[2],A[5],A[8]];
+const mv33 = (A,v) => [A[0]*v[0]+A[1]*v[1]+A[2]*v[2], A[3]*v[0]+A[4]*v[1]+A[5]*v[2], A[6]*v[0]+A[7]*v[1]+A[8]*v[2]];
+const det33 = A => A[0]*(A[4]*A[8]-A[5]*A[7]) - A[1]*(A[3]*A[8]-A[5]*A[6]) + A[2]*(A[3]*A[7]-A[4]*A[6]);
+const neg33 = A => A.map(x=>-x);
+const rotAngle = R => Math.acos(Math.min(1, Math.max(-1, (R[0]+R[4]+R[8]-1)/2))) * 180/Math.PI;
+const dot3 = (a,b) => a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const sub3 = (a,b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+const norm3 = a => { const n = Math.hypot(a[0],a[1],a[2]) || 1; return [a[0]/n, a[1]/n, a[2]/n]; };
+const cross3 = (a,b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+
+// ============ 状态 ============
+let procW = 0, procH = 0, procCv, procCtx, imgU8, pyrPrev, pyrCurr, cornerPool = [];
+let pts = [];                                   // {x,y,px,py,kx,ky,kSet,age,trail,inlier,w3d,n3,planeIdx}
+let xyPrev, xyCurr, xyBack, lkStatus, lkStatusB;
+let redetects = 0, rejects = 0, running = false, fpsWin = [], lastT = 0;
+let focal = 320, cx = 160, cy = 120;
+let poseR = I3(), poseT = [0,0,0], path = [];   // 世界系=首帧相机系；poseR: cam→world, poseT: 相机中心世界坐标
+let state = 'INIT';
+let jitWin = [];
+// D3.5：持久地图（世界系点出视野不丢）+ 多平面（各自独立凸包/网格）
+let kf = null, kfImg = null, kfPyr = null, recPyr = null;   // kf={R,T,pts:[{x,y,w3d}]}；恢复专用 4 层金字塔（主链 3 层追不上大位移）
+let cloudN = 0;
+let mapPts = [];                             // [{w:[x,y,z], n:[..]|null, plane:int}] 持久世界系点云
+let planes = [];                             // [{n,d,lockN,c,u,v,inl,hull2,hull,mesh:{v3,edges},thr,lastMeshN,lastMeshT}]
+let mapCapWarned = false;
+let anchors = [];                            // [{w,n,u,v}]（放下即记录平面局部基，平面精修不带动锚点）
+let recoveries = 0, darkCnt = 0, lastS = null, gravCam = null;
+let fSamples = [], lastCalT = 0;               // 焦距自标定（纯旋转期 Δpx=f·Δθ）
+let wideRetries = 0, fStale = true;            // 视场闭环：自动重开预算 + "度数未重新标定"标记
+let camTrack = null, zoomCaps = null, curZoom = 1;  // 变焦控制（applyConstraints zoom）
+// IMU
+let imuQ = null, imuQPrev = null, imuReady = false, imuViaGyro = false;
+let imuEvtCnt = 0, imuNullCnt = 0, motionEvtCnt = 0;
+let lastRate = null, biasWin = [], gyroBias = [0,0,0];
+const qmul = (a, b) => [
+  a[0]*b[0]-a[1]*b[1]-a[2]*b[2]-a[3]*b[3],
+  a[0]*b[1]+a[1]*b[0]+a[2]*b[3]-a[3]*b[2],
+  a[0]*b[2]-a[1]*b[3]+a[2]*b[0]+a[3]*b[1],
+  a[0]*b[3]+a[1]*b[2]-a[2]*b[1]+a[3]*b[0]];
+const qnorm = q => { const n = Math.hypot(q[0],q[1],q[2],q[3]) || 1; return [q[0]/n,q[1]/n,q[2]/n,q[3]/n]; };
+window.__log = [];
+window.__dump = () => JSON.stringify(window.__log);
+
+function allocStructs() {
+  procCv = document.createElement('canvas');
+  procCv.width = procW; procCv.height = procH;
+  procCtx = procCv.getContext('2d', { willReadFrequently: true });
+  imgU8 = new jsfeat.matrix_t(procW, procH, jsfeat.U8_t | jsfeat.C1_t);
+  pyrPrev = new jsfeat.pyramid_t(LK_LEVELS); pyrCurr = new jsfeat.pyramid_t(LK_LEVELS);
+  pyrPrev.allocate(procW, procH, jsfeat.U8_t | jsfeat.C1_t);
+  pyrCurr.allocate(procW, procH, jsfeat.U8_t | jsfeat.C1_t);
+  kfImg = new jsfeat.matrix_t(procW, procH, jsfeat.U8_t | jsfeat.C1_t);
+  kfPyr = new jsfeat.pyramid_t(LK_LEVELS + 1);
+  kfPyr.allocate(procW, procH, jsfeat.U8_t | jsfeat.C1_t);
+  recPyr = new jsfeat.pyramid_t(LK_LEVELS + 1);
+  recPyr.allocate(procW, procH, jsfeat.U8_t | jsfeat.C1_t);
+  jsfeat.cache.allocate(procW * procH * 8);
+  cornerPool = [];
+  for (let i = 0; i < 30000; i++) cornerPool.push(new jsfeat.keypoint_t(0, 0, 0, 0, -1));
+  xyPrev = new Float32Array(MAX * 2); xyCurr = new Float32Array(MAX * 2);
+  xyBack = new Float32Array(MAX * 2);
+  lkStatus = new Uint8Array(MAX); lkStatusB = new Uint8Array(MAX);
+  overlay.width = procW; overlay.height = procH;
+  jsfeat.fast_corners.set_threshold(FAST_TH);
+  focal = Math.max(procW, procH) * FOCAL_RATIO; cx = procW / 2; cy = procH / 2;
+}
+function resetAll() {
+  pts = []; poseR = I3(); poseT = [0,0,0]; path = []; state = 'INIT'; jitWin = []; rejects = 0;
+  kf = null; cloudN = 0; mapPts = []; planes = []; mapCapWarned = false;
+  anchors = []; recoveries = 0; darkCnt = 0; lastS = null;
+  window.__log.length = 0;
+}
+
+// ============ 特征检测（同 D2） ============
+function detectPoints() {
+  const need = TARGET - pts.length;
+  if (need <= 0) return;
+  const n = Math.min(jsfeat.fast_corners.detect(imgU8, cornerPool, BORDER), cornerPool.length);
+  const cols = Math.ceil(procW / CELL);
+  const best = new Map(), occupied = new Set();
+  for (const p of pts) occupied.add((p.y / CELL | 0) * cols + (p.x / CELL | 0));
+  for (let i = 0; i < n; i++) {
+    const c = cornerPool[i], ci = (c.y / CELL | 0) * cols + (c.x / CELL | 0);
+    if (occupied.has(ci)) continue;
+    const cur = best.get(ci);
+    if (cur === undefined || cornerPool[cur].score < c.score) best.set(ci, i);
+  }
+  const picked = [...best.values()].sort((a, b) => cornerPool[b].score - cornerPool[a].score);
+  for (let i = 0; i < Math.min(need, picked.length); i++) {
+    const c = cornerPool[picked[i]];
+    pts.push({ x: c.x, y: c.y, px: c.x, py: c.y, kx: c.x, ky: c.y, kSet: false, age: 0, trail: [[c.x, c.y]], inlier: true, w3d: null, n3: null, planeIdx: -1 });
+  }
+}
+
+// ============ 8 点法 + RANSAC（同 D2） ============
+function buildAtA(x1, y1, x2, y2, idx, m) {
+  const AtA = new Float64Array(81);
+  for (let k = 0; k < m; k++) {
+    const i = idx[k];
+    const a = x1[i], b = y1[i], c = x2[i], d = y2[i];
+    const r = [c*a, c*b, c, d*a, d*b, d, a, b, 1];
+    for (let p = 0; p < 9; p++) for (let q = 0; q <= p; q++) AtA[p*9+q] += r[p]*r[q];
+  }
+  for (let p = 0; p < 9; p++) for (let q = p+1; q < 9; q++) AtA[p*9+q] = AtA[q*9+p];
+  return AtA;
+}
+function nullVector9(AtA) {
+  const A = new jsfeat.matrix_t(9, 9, jsfeat.F64_t | jsfeat.C1_t);
+  A.data.set(AtA);
+  const V = new jsfeat.matrix_t(9, 9, jsfeat.F64_t | jsfeat.C1_t);
+  jsfeat.linalg.eigenVV(A, V);
+  return V.data.slice(72, 81);
+}
+function sampson(E, x1, y1, x2, y2) {
+  const Ex1 = [E[0]*x1+E[1]*y1+E[2], E[3]*x1+E[4]*y1+E[5], E[6]*x1+E[7]*y1+E[8]];
+  const Etx2 = [E[0]*x2+E[3]*y2+E[6], E[1]*x2+E[4]*y2+E[7], E[2]*x2+E[5]*y2+E[8]];
+  const r = x2*Ex1[0] + y2*Ex1[1] + Ex1[2];
+  const denom = Ex1[0]*Ex1[0] + Ex1[1]*Ex1[1] + Etx2[0]*Etx2[0] + Etx2[1]*Etx2[1];
+  return denom > 1e-12 ? Math.abs(r) / Math.sqrt(denom) : 1e9;
+}
+function estimateE(x1, y1, x2, y2, n) {
+  const all = Array.from({length: n}, (_, i) => i);
+  let bestE = null, bestCount = 0, bestMask = null;
+  for (let it = 0; it < RANSAC_ITER; it++) {
+    const idx = [];
+    while (idx.length < 8) { const k = all[Math.random()*n | 0]; if (!idx.includes(k)) idx.push(k); }
+    const e = nullVector9(buildAtA(x1, y1, x2, y2, idx, 8));
+    let cnt = 0; const mask = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      if (sampson(e, x1[i], y1[i], x2[i], y2[i]) < RANSAC_TH) { mask[i] = 1; cnt++; }
+    }
+    if (cnt > bestCount) { bestCount = cnt; bestE = e; bestMask = mask; }
+  }
+  if (!bestE || bestCount < MIN_INLIERS || bestCount / n < MIN_INLIER_RATIO) return null;
+  const inlIdx = [];
+  for (let i = 0; i < n; i++) if (bestMask[i]) inlIdx.push(i);
+  const E = nullVector9(buildAtA(x1, y1, x2, y2, inlIdx, inlIdx.length));
+  return { E, inliers: bestCount, mask: bestMask };
+}
+
+// ============ E 分解 + 手性（同 D2） ============
+function decomposeE(Ein) {
+  const A = new jsfeat.matrix_t(3, 3, jsfeat.F64_t | jsfeat.C1_t);
+  A.data.set(Ein);
+  const W = new jsfeat.matrix_t(1, 3, jsfeat.F64_t | jsfeat.C1_t);
+  const U = new jsfeat.matrix_t(3, 3, jsfeat.F64_t | jsfeat.C1_t);
+  const V = new jsfeat.matrix_t(3, 3, jsfeat.F64_t | jsfeat.C1_t);
+  jsfeat.linalg.svd_decompose(A, W, U, V, 0);
+  const Ud = [...U.data], Vd = [...V.data];
+  const Wrot = [0,-1,0, 1,0,0, 0,0,1];
+  const Vt = tr33(Vd);
+  let R1 = mul33(mul33(Ud, Wrot), Vt);
+  let R2 = mul33(mul33(Ud, tr33(Wrot)), Vt);
+  if (det33(R1) < 0) R1 = neg33(R1);
+  if (det33(R2) < 0) R2 = neg33(R2);
+  const t = [Ud[2], Ud[5], Ud[8]];
+  return [{R: R1, t}, {R: R1, t: [-t[0],-t[1],-t[2]]}, {R: R2, t}, {R: R2, t: [-t[0],-t[1],-t[2]]}];
+}
+// 线性三角化：P1=[I|0], P2=[R|t] → frame1 系 3D 点（单位基线尺度）
+function triangulate(R, t, x1, y1, x2, y2) {
+  const P2 = [R[0],R[1],R[2],t[0], R[3],R[4],R[5],t[1], R[6],R[7],R[8],t[2]];
+  const rows = [
+    [ -1, 0, x1, 0 ],
+    [ 0, -1, y1, 0 ],
+    [ x2*P2[8]-P2[0], x2*P2[9]-P2[1], x2*P2[10]-P2[2], x2*P2[11]-P2[3] ],
+    [ y2*P2[8]-P2[4], y2*P2[9]-P2[5], y2*P2[10]-P2[6], y2*P2[11]-P2[7] ]
+  ];
+  const AtA = new Float64Array(16);
+  for (const r of rows) for (let p = 0; p < 4; p++) for (let q = 0; q <= p; q++) AtA[p*4+q] += r[p]*r[q];
+  for (let p = 0; p < 4; p++) for (let q = p+1; q < 4; q++) AtA[p*4+q] = AtA[q*4+p];
+  const Am = new jsfeat.matrix_t(4, 4, jsfeat.F64_t | jsfeat.C1_t); Am.data.set(AtA);
+  const Vm = new jsfeat.matrix_t(4, 4, jsfeat.F64_t | jsfeat.C1_t);
+  jsfeat.linalg.eigenVV(Am, Vm);
+  const X = Vm.data.slice(12, 16);
+  if (Math.abs(X[3]) < 1e-9) return null;
+  return [X[0]/X[3], X[1]/X[3], X[2]/X[3]];
+}
+function cheiralityScore(R, t, x1, y1, x2, y2, mask, n) {
+  let good = 0, tested = 0;
+  for (let i = 0; i < n && tested < 20; i++) {
+    if (!mask[i]) continue;
+    tested++;
+    const X = triangulate(R, t, x1[i], y1[i], x2[i], y2[i]);
+    if (!X) continue;
+    const z2 = R[6]*X[0] + R[7]*X[1] + R[8]*X[2] + t[2];
+    if (X[2] > 0 && z2 > 0) good++;
+  }
+  return good;
+}
+function recoverPose(E, x1, y1, x2, y2, mask, n) {
+  const cands = decomposeE(E);
+  let best = null, bestScore = -1;
+  for (const c of cands) {
+    const s = cheiralityScore(c.R, c.t, x1, y1, x2, y2, mask, n);
+    if (s > bestScore) { bestScore = s; best = c; }
+  }
+  return best;
+}
+
+// ============ D3：坐标变换 ============
+const camPt = (R, T, Xw) => mv33(tr33(R), sub3(Xw, T));   // 世界 → 相机系
+function projectW(R, T, Xw) {                              // 世界点 → 处理图像素；不可见返回 null
+  const Xc = camPt(R, T, Xw);
+  if (Xc[2] < 0.02) return null;
+  return [Xc[0]/Xc[2]*focal + cx, Xc[1]/Xc[2]*focal + cy];
+}
+// 焦距修正时按比例重塑世界（重投影位置不变，尺度本就任意；KF/地图/平面/锚点同步缩）
+function rescaleWorld(s) {
+  for (const p of pts) if (p.w3d) p.w3d = p.w3d.map(v => v * s);
+  for (const q of mapPts) q.w = q.w.map(v => v * s);
+  for (const a of anchors) a.w = a.w.map(v => v * s);
+  poseT = poseT.map(v => v * s);
+  for (const pl of planes) {
+    pl.d *= s;
+    if (pl.c) pl.c = pl.c.map(v => v * s);
+    if (pl.hull) pl.hull = pl.hull.map(X => X.map(v => v * s));
+    if (pl.mesh) pl.mesh.v3 = pl.mesh.v3.map(X => X.map(v => v * s));
+    pl.lastMeshN = -999;                          // 尺度变了 → 强制重三角化
+  }
+  if (kf) { kf.T = kf.T.map(v => v * s); for (const q of kf.pts) if (q.w3d) q.w3d = q.w3d.map(v => v * s); }
+  path = path.map(([x, z]) => [x * s, z * s]);
+}
+
+// ============ D3：尺度传播 + 点云 ============
+// 基线对(KF→当前)三角化；旧点世界深度/新三角化深度中位比 = 基线真实长度 s
+// 返回 {s, newPts: 本次获得 w3d 的点数}；尺度不可信返回 null（调用方丢弃本次运动）
+function scaleAndCloud(kPtIdx, sol, mask) {
+  const oldS = [], tri = [];
+  for (let i = 0; i < kPtIdx.length; i++) {
+    if (!mask[i]) continue;
+    const p = pts[kPtIdx[i]];
+    const X = triangulate(sol.R, sol.t,
+      (p.kx - cx) / focal, (p.ky - cy) / focal, (p.x - cx) / focal, (p.y - cy) / focal);
+    if (!X || X[2] <= 0) continue;
+    tri.push({ p, X });
+    if (p.w3d) {
+      const zk = camPt(poseR, poseT, p.w3d)[2];       // 旧点在 KF(=当前冻结位姿)系的已知深度
+      if (zk > 0) oldS.push(zk / X[2]);
+    }
+  }
+  let s = 1;
+  if (oldS.length >= SCALE_MIN_OLD) {
+    oldS.sort((a, b) => a - b);
+    s = oldS[oldS.length >> 1];
+    if (!(s > SCALE_MIN && s < SCALE_MAX)) return null;
+  } else if (cloudN > 0) {
+    return null;                                       // 世界已建立但旧点不足：不信任本次尺度
+  }
+  // 应用位姿：R_wn = R_k·Rᵀ, T_n = T_k − s·R_wn·t
+  const Rwn = mul33(poseR, tr33(sol.R));
+  const dt = mv33(Rwn, sol.t);
+  poseT = [poseT[0]-s*dt[0], poseT[1]-s*dt[1], poseT[2]-s*dt[2]];
+  poseR = Rwn;
+  // 新点入云：X_w = R_k·(s·X) + T_k（KF 位姿由更新值还原：R_k = R_wn·R，T_k = T_n + s·R_wn·t）
+  const Rk = mul33(Rwn, sol.R);
+  const Tk = [poseT[0]+s*dt[0], poseT[1]+s*dt[1], poseT[2]+s*dt[2]];
+  let added = 0;
+  for (const { p, X } of tri) {
+    if (p.w3d) continue;
+    const Xw = mv33(Rk, [s*X[0], s*X[1], s*X[2]]);
+    p.w3d = [Xw[0]+Tk[0], Xw[1]+Tk[1], Xw[2]+Tk[2]];
+    added++;
+  }
+  cloudN += added;
+  return { s, added };
+}
+
+// ============ D3：关键帧快照（丢踪恢复用；落地"关键帧"架构项） ============
+function snapshotKF() {
+  kfImg.data.set(imgU8.data);
+  kfPyr.build(kfImg, false);
+  kf = {
+    R: [...poseR], T: [...poseT],
+    pts: pts.slice(0, MAX).map(p => ({ x: p.x, y: p.y, w3d: p.w3d ? [...p.w3d] : null }))
+  };
+}
+
+// ============ D3.5：持久地图 + 多平面分割 + 低模网格 ============
+// 设计：活跟踪点 pts 出视野即弃 → 每次位姿更新把带 w3d 的点并入 mapPts（空间哈希去重，幂等）；
+// 平面从 mapPts 检出（重力多簇=水平面各自返回 + 顺序 RANSAC=任意朝向），EMA 精修，视野外不丢；
+// 每平面面内降采样 → Delaunay 低模网格，随新点云增量重三角化。
+function sceneMedianDist() {
+  const ds = [];
+  if (mapPts.length) for (const q of mapPts) ds.push(Math.hypot(q.w[0]-poseT[0], q.w[1]-poseT[1], q.w[2]-poseT[2]));
+  else for (const p of pts) if (p.w3d) ds.push(Math.hypot(p.w3d[0]-poseT[0], p.w3d[1]-poseT[1], p.w3d[2]-poseT[2]));
+  if (!ds.length) return 0;
+  ds.sort((a, b) => a - b);
+  return ds[ds.length >> 1];
+}
+// 空间哈希网格（合并去重 + 法向邻域共用）
+function buildGrid(cell) {
+  const g = new Map();
+  for (let i = 0; i < mapPts.length; i++) {
+    const w = mapPts[i].w;
+    const k = Math.floor(w[0]/cell) + ',' + Math.floor(w[1]/cell) + ',' + Math.floor(w[2]/cell);
+    const a = g.get(k); if (a) a.push(i); else g.set(k, [i]);
+  }
+  return g;
+}
+function gridNeighbors(g, w, cell, out, cap) {
+  const bx = Math.floor(w[0]/cell), by = Math.floor(w[1]/cell), bz = Math.floor(w[2]/cell);
+  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+    const a = g.get((bx+dx) + ',' + (by+dy) + ',' + (bz+dz));
+    if (a) for (const i of a) { out.push(i); if (out.length >= cap) return; }
+  }
+}
+// 活点入图（幂等：近距去重）。每次位姿更新调用——点死亡前必已入图，故出视野不丢
+function mergeIntoMap(medDist) {
+  const mergeR = Math.max(1e-4, MAP_MERGE_K * medDist), r2 = mergeR * mergeR;
+  const g = buildGrid(mergeR);
+  const nb = [];
+  for (const p of pts) {
+    if (!p.w3d) continue;
+    nb.length = 0;
+    gridNeighbors(g, p.w3d, mergeR, nb, 24);
+    let dup = false;
+    for (const i of nb) {
+      const q = mapPts[i].w, dx = q[0]-p.w3d[0], dy = q[1]-p.w3d[1], dz = q[2]-p.w3d[2];
+      if (dx*dx + dy*dy + dz*dz < r2) { dup = true; break; }
+    }
+    if (dup) continue;
+    if (mapPts.length >= MAP_MAX) {
+      if (!mapCapWarned) { mapCapWarned = true; setMsg('地图点已达上限 ' + MAP_MAX + '，新区域不再入图（重置可清）。', true); }
+      return;
+    }
+    const ni = mapPts.length;
+    mapPts.push({ w: [...p.w3d], n: null, plane: -1 });
+    const k = Math.floor(p.w3d[0]/mergeR) + ',' + Math.floor(p.w3d[1]/mergeR) + ',' + Math.floor(p.w3d[2]/mergeR);
+    const a = g.get(k); if (a) a.push(ni); else g.set(k, [ni]);
+  }
+}
+// 新点法向：3D 邻域（半径=中位场景距 15%，≤12 邻居）PCA 最小特征向量，朝相机定向；只算 n===null 的新点
+function assignNormals(medDist) {
+  const r = 0.15 * medDist, r2 = r * r;
+  const g = buildGrid(r);
+  const nb = [];
+  for (const p of mapPts) {
+    if (p.n) continue;
+    nb.length = 0;
+    gridNeighbors(g, p.w, r, nb, 20);
+    const nbr = [];
+    for (const i of nb) {
+      const q = mapPts[i];
+      if (q === p) continue;
+      const dx = q.w[0]-p.w[0], dy = q.w[1]-p.w[1], dz = q.w[2]-p.w[2];
+      if (dx*dx + dy*dy + dz*dz < r2) { nbr.push(q); if (nbr.length >= 12) break; }
+    }
+    if (nbr.length < 5) continue;                        // 邻居不足 → 下轮再试
+    let mx=0, my=0, mz=0;
+    for (const q of nbr) { mx+=q.w[0]; my+=q.w[1]; mz+=q.w[2]; }
+    mx/=nbr.length; my/=nbr.length; mz/=nbr.length;
+    let cxx=0, cxy=0, cxz=0, cyy=0, cyz=0, czz=0;
+    for (const q of nbr) {
+      const dx=q.w[0]-mx, dy=q.w[1]-my, dz=q.w[2]-mz;
+      cxx+=dx*dx; cxy+=dx*dy; cxz+=dx*dz; cyy+=dy*dy; cyz+=dy*dz; czz+=dz*dz;
+    }
+    const C = new jsfeat.matrix_t(3,3,jsfeat.F64_t|jsfeat.C1_t);
+    C.data.set([cxx,cxy,cxz, cxy,cyy,cyz, cxz,cyz,czz]);
+    const V = new jsfeat.matrix_t(3,3,jsfeat.F64_t|jsfeat.C1_t);
+    jsfeat.linalg.eigenVV(C, V);
+    let n = [V.data[6], V.data[7], V.data[8]];           // 最小特征向量=末行（同 nullVector9 约定）
+    if (dot3(n, sub3(poseT, p.w)) < 0) n = neg33(n);     // 朝相机定向
+    p.n = n;
+  }
+}
+// Bowyer-Watson 增量 Delaunay（2D 面内）；返回三角形索引三元组（顶点数 <100000 为前提的边键编码）
+function delaunay2(P) {
+  const n = P.length;
+  if (n < 3) return [];
+  let minX=1e30, minY=1e30, maxX=-1e30, maxY=-1e30;
+  for (const p of P) { if (p[0]<minX) minX=p[0]; if (p[0]>maxX) maxX=p[0]; if (p[1]<minY) minY=p[1]; if (p[1]>maxY) maxY=p[1]; }
+  const dm = Math.max(maxX-minX, maxY-minY) || 1, mx=(minX+maxX)/2, my=(minY+maxY)/2;
+  const pts = P.concat([[mx-20*dm, my-dm], [mx, my+20*dm], [mx+20*dm, my-dm]]);   // 超三角形
+  let tris = [[n, n+1, n+2]];
+  const circum = t => {
+    const a=pts[t[0]], b=pts[t[1]], c=pts[t[2]];
+    const d = 2*(a[0]*(b[1]-c[1]) + b[0]*(c[1]-a[1]) + c[0]*(a[1]-b[1]));
+    if (Math.abs(d) < 1e-12) return null;
+    const a2=a[0]*a[0]+a[1]*a[1], b2=b[0]*b[0]+b[1]*b[1], c2=c[0]*c[0]+c[1]*c[1];
+    const cx=(a2*(b[1]-c[1]) + b2*(c[1]-a[1]) + c2*(a[1]-b[1]))/d;
+    const cy=(a2*(c[0]-b[0]) + b2*(a[0]-c[0]) + c2*(b[0]-a[0]))/d;
+    return [cx, cy, (cx-a[0])*(cx-a[0]) + (cy-a[1])*(cy-a[1])];
+  };
+  for (let i = 0; i < n; i++) {
+    const p = pts[i], bad = new Set();
+    for (let ti = 0; ti < tris.length; ti++) {
+      const c = circum(tris[ti]);
+      if (c) { const dx=p[0]-c[0], dy=p[1]-c[1]; if (dx*dx + dy*dy <= c[2]) bad.add(ti); }
+    }
+    const edgeCnt = new Map();
+    for (const ti of bad) {
+      const t = tris[ti];
+      for (let e = 0; e < 3; e++) {
+        let a = t[e], b = t[(e+1)%3];
+        if (a > b) { const tmp = a; a = b; b = tmp; }
+        const k = a*100000 + b;
+        edgeCnt.set(k, (edgeCnt.get(k) || 0) + 1);
+      }
+    }
+    tris = tris.filter((_, ti) => !bad.has(ti));
+    for (const [k, c] of edgeCnt) {
+      if (c !== 1) continue;                             // 只属于一个坏三角形的边=空洞边界
+      tris.push([(k/100000)|0, k%100000, i]);
+    }
+  }
+  return tris.filter(t => t[0] < n && t[1] < n && t[2] < n);   // 去掉超三角形关联面
+}
+function inHull2(pt, hull) {                             // 凸包点包含（叉积同号法，边界算在内）
+  let sign = 0;
+  for (let i = 0; i < hull.length; i++) {
+    const a = hull[i], b = hull[(i+1)%hull.length];
+    const c = (b[0]-a[0])*(pt[1]-a[1]) - (b[1]-a[1])*(pt[0]-a[0]);
+    if (Math.abs(c) < 1e-12) continue;
+    const s = c > 0 ? 1 : -1;
+    if (!sign) sign = s; else if (s !== sign) return false;
+  }
+  return true;
+}
+// 多平面分割主流程（每次成功位姿估计后调用）
+function updateMap() {
+  const medDist = sceneMedianDist();
+  if (!medDist) return;
+  mergeIntoMap(medDist);
+  assignNormals(medDist);
+  if (mapPts.length < 10) return;
+  const thr = Math.max(1e-4, PLANE_THR_K * medDist);
+  const cands = [];
+  const covered = new Uint8Array(mapPts.length);
+  // 路径A（主，需重力）：滑窗 [o, o+2thr] 达标窗沿重力轴收集 → 索引重叠归并为层（多簇返回：地面/桌面各自成组）；
+  // 每层取最密窗的中位偏移。竖墙沿重力摊开密度低（密度×2thr < GRAV_MIN_VOTES 无达标窗）天然挡伪簇
+  if (gravCam) {
+    const gw = mv33(poseR, gravCam);                     // 世界上方向
+    const offs = mapPts.map((q, i) => [dot3(gw, q.w), i]).sort((a, b) => a[0] - b[0]);
+    const layers = [];
+    for (let i = 0, j = 0; i < offs.length; i++) {
+      while (offs[i][0] - offs[j][0] > 2 * thr) j++;
+      if (i - j + 1 < GRAV_MIN_VOTES) continue;
+      const last = layers[layers.length - 1];
+      if (last && j <= last.end) {
+        last.end = Math.max(last.end, i);
+        if (i - j > last.bw[1] - last.bw[0]) last.bw = [j, i];
+      } else layers.push({ end: i, bw: [j, i] });
+    }
+    for (const L of layers) {
+      const [a, b] = L.bw;
+      const med = offs[(a + b) >> 1][0];
+      const inIdx = [];
+      for (let k = a; k <= b; k++) if (Math.abs(offs[k][0] - med) < thr) inIdx.push(offs[k][1]);
+      if (inIdx.length < GRAV_MIN_VOTES) continue;       // 终筛：真正落在 ±thr 厚度内的点数
+      // 成员法向校验：竖结构（墙）沿重力摊开也会偶发达标窗——但其点法向 ⊥ 重力；真水平面法向 ∥ 重力。
+      // 无法向点（低纹理地面）不计票：agree=disagree=0 时放行（重力路径本意=不依赖法向）
+      let agree = 0, disagree = 0;
+      for (const i of inIdx) {
+        const q = mapPts[i];
+        if (!q.n) continue;
+        if (Math.abs(dot3(q.n, gw)) > 0.87) agree++; else disagree++;
+      }
+      if (disagree > agree) continue;
+      let n = [...gw], d = -med;
+      const onP = [-d*n[0], -d*n[1], -d*n[2]];
+      if (dot3(n, sub3(poseT, onP)) < 0) { n = neg33(n); d = -d; }   // 法向朝相机
+      for (const i of inIdx) covered[i] = 1;
+      cands.push({ n, d, count: inIdx.length, lockN: true });        // 重力锁法向：1-DOF 精确，占比门豁免
+    }
+  }
+  // 路径B：法向一致 3 点 RANSAC 顺序提取（墙面等任意朝向；已覆盖点剔除，保证墙面进池）
+  let pool = [];
+  for (let i = 0; i < mapPts.length; i++) if (!covered[i] && mapPts[i].n) pool.push(i);
+  for (let ex = cands.length; ex < MAX_PLANES; ex++) {
+    if (pool.length < PLANE_MIN_INL) break;
+    let best = null;
+    for (let it = 0; it < PLANE_ITER; it++) {
+      const A = mapPts[pool[Math.random()*pool.length|0]], B = mapPts[pool[Math.random()*pool.length|0]], C = mapPts[pool[Math.random()*pool.length|0]];
+      if (A === B || B === C || A === C) continue;
+      if (dot3(A.n,B.n) < 0.87 || dot3(B.n,C.n) < 0.87) continue;   // 采样点法向互一致（30°）
+      let n = cross3(sub3(B.w, A.w), sub3(C.w, A.w));
+      const nn = Math.hypot(n[0], n[1], n[2]);
+      if (nn < 1e-9) continue;
+      n = [n[0]/nn, n[1]/nn, n[2]/nn];
+      const mn = norm3([A.n[0]+B.n[0]+C.n[0], A.n[1]+B.n[1]+C.n[1], A.n[2]+B.n[2]+C.n[2]]);
+      if (dot3(n, mn) < 0) n = neg33(n);
+      const d = -dot3(n, A.w);
+      let cnt = 0;
+      for (const i of pool) { const q = mapPts[i]; if (Math.abs(dot3(n, q.w) + d) < thr && dot3(q.n, n) > 0.87) cnt++; }
+      let score = cnt;
+      if (gravCam) score *= 1 + Math.abs(dot3(mv33(tr33(poseR), n), gravCam));   // 水平面软加分
+      if (!best || score > best.score) best = { n, d, count: cnt, score };
+    }
+    if (!best || best.count < PLANE_MIN_INL) break;
+    // 内点 PCA 精修（总最小二乘）——3 点采样平面带 tilt（d 偏差 ~0.1），精修后 d 才可信
+    const bIdx = pool.filter(i => Math.abs(dot3(best.n, mapPts[i].w) + best.d) < thr && dot3(mapPts[i].n, best.n) > 0.87);
+    let mx=0, my=0, mz=0;
+    for (const i of bIdx) { mx+=mapPts[i].w[0]; my+=mapPts[i].w[1]; mz+=mapPts[i].w[2]; }
+    mx/=bIdx.length; my/=bIdx.length; mz/=bIdx.length;
+    let cxx=0, cxy=0, cxz=0, cyy=0, cyz=0, czz=0;
+    for (const i of bIdx) {
+      const dx=mapPts[i].w[0]-mx, dy=mapPts[i].w[1]-my, dz=mapPts[i].w[2]-mz;
+      cxx+=dx*dx; cxy+=dx*dy; cxz+=dx*dz; cyy+=dy*dy; cyz+=dy*dz; czz+=dz*dz;
+    }
+    const Cm = new jsfeat.matrix_t(3,3,jsfeat.F64_t|jsfeat.C1_t);
+    Cm.data.set([cxx,cxy,cxz, cxy,cyy,cyz, cxz,cyz,czz]);
+    const Vm = new jsfeat.matrix_t(3,3,jsfeat.F64_t|jsfeat.C1_t);
+    jsfeat.linalg.eigenVV(Cm, Vm);
+    let nFit = [Vm.data[6], Vm.data[7], Vm.data[8]];
+    if (dot3(nFit, best.n) < 0) nFit = neg33(nFit);
+    const dFit = -dot3(nFit, [mx, my, mz]);
+    cands.push({ n: nFit, d: dFit, count: bIdx.length, lockN: false });
+    pool = pool.filter(i => Math.abs(dot3(nFit, mapPts[i].w) + dFit) >= thr || dot3(mapPts[i].n, nFit) <= 0.87);
+  }
+  // 匹配已有平面（法向+偏移近 → EMA 精修）/ 否则新建（槽位有限）；锚点与平面解耦不受影响
+  cands.sort((a, b) => b.count - a.count);
+  const touched = new Set();
+  for (const cd of cands) {
+    let tgt = null;
+    for (const pl of planes) {
+      let cn = cd.n, cdd = cd.d;
+      if (dot3(cn, pl.n) < 0) { cn = neg33(cn); cdd = -cdd; }
+      if (dot3(cn, pl.n) > PLANE_MATCH_COS && Math.abs(cdd - pl.d) < 2*thr) { tgt = pl; cd.n = cn; cd.d = cdd; break; }
+    }
+    if (tgt) {
+      tgt.n = norm3([0.7*tgt.n[0]+0.3*cd.n[0], 0.7*tgt.n[1]+0.3*cd.n[1], 0.7*tgt.n[2]+0.3*cd.n[2]]);
+      tgt.d = 0.7*tgt.d + 0.3*cd.d;
+    } else if (planes.length < MAX_PLANES) {
+      let u = cross3(cd.n, [0, 1, 0]);
+      if (Math.hypot(u[0], u[1], u[2]) < 0.1) u = cross3(cd.n, [1, 0, 0]);
+      u = norm3(u);
+      planes.push({ n: [...cd.n], d: cd.d, lockN: cd.lockN, u, v: cross3(cd.n, u), c: null,
+        inl: 0, inlIdx: [], thr, hull2: null, hull: null, mesh: null, lastMeshT: 0 });
+      tgt = planes[planes.length - 1];
+    }
+    if (tgt) touched.add(tgt);
+  }
+  for (const pl of touched) refreshPlane(pl, thr);
+  // 地图点/活点平面归属（渲染着色用）
+  for (const q of mapPts) q.plane = -1;
+  planes.forEach((pl, pi) => { for (const i of pl.inlIdx) mapPts[i].plane = pi; });
+  for (const p of pts) p.planeIdx = -1;
+  planes.forEach((pl, pi) => {
+    for (const p of pts) {
+      if (!p.w3d || p.planeIdx >= 0) continue;
+      if (Math.abs(dot3(pl.n, p.w3d) + pl.d) < pl.thr) p.planeIdx = pi;
+    }
+  });
+}
+// 平面内点重算（全地图，含视野外点=持久化核心）→ 凸包（Andrew 单调链）→ 面内降采样 → Delaunay 低模网格
+// 注：u/v 基在平面创建时固定，EMA 只微调 n/d——凸包/网格投影面与平面方程的微小偏差对显示与落锚可忽略
+function refreshPlane(pl, thr) {
+  pl.thr = thr;
+  const idx = [];
+  for (let i = 0; i < mapPts.length; i++) {
+    const q = mapPts[i];
+    if (Math.abs(dot3(pl.n, q.w) + pl.d) < thr && (pl.lockN || (q.n && dot3(q.n, pl.n) > 0.87))) idx.push(i);
+  }
+  const grew = idx.length - pl.inl >= MESH_RETRI_MIN || !pl.hull;
+  pl.inl = idx.length; pl.inlIdx = idx;
+  if (idx.length < 5 || (!grew && performance.now() - pl.lastMeshT < 1000)) return;   // 增量/1s 节流
+  pl.lastMeshT = performance.now();
+  let cx0=0, cy0=0, cz0=0;
+  for (const i of idx) { cx0+=mapPts[i].w[0]; cy0+=mapPts[i].w[1]; cz0+=mapPts[i].w[2]; }
+  pl.c = [cx0/idx.length, cy0/idx.length, cz0/idx.length];
+  const P2 = idx.map(i => { const on = sub3(mapPts[i].w, pl.c); return [dot3(on, pl.u), dot3(on, pl.v)]; });
+  pl.hull2 = convexHull2([...P2].sort((a, b) => a[0]-b[0] || a[1]-b[1]));
+  pl.hull = pl.hull2.map(([a, b]) => [pl.c[0]+a*pl.u[0]+b*pl.v[0], pl.c[1]+a*pl.u[1]+b*pl.v[1], pl.c[2]+a*pl.u[2]+b*pl.v[2]]);
+  // 低模降采样：面内网格每格保留一点 → ≤MESH_MAX_V 顶点
+  let minX=1e30, maxX=-1e30, minY=1e30, maxY=-1e30;
+  for (const p of P2) { if (p[0]<minX) minX=p[0]; if (p[0]>maxX) maxX=p[0]; if (p[1]<minY) minY=p[1]; if (p[1]>maxY) maxY=p[1]; }
+  const cell = (Math.hypot(maxX-minX, maxY-minY) || 1) / Math.sqrt(MESH_MAX_V);
+  const cellMap = new Map(), V2 = [];
+  for (const p of P2) {
+    const k = Math.floor(p[0]/cell) + ',' + Math.floor(p[1]/cell);
+    if (cellMap.has(k)) continue;
+    cellMap.set(k, 1); V2.push(p);
+  }
+  const tris = delaunay2(V2);
+  const es = new Set(), edges = [];
+  for (const t of tris) for (let e = 0; e < 3; e++) {
+    let a = t[e], b = t[(e+1)%3];
+    if (a > b) { const tmp = a; a = b; b = tmp; }
+    const k = a*100000 + b;
+    if (!es.has(k)) { es.add(k); edges.push([a, b]); }
+  }
+  pl.mesh = { v3: V2.map(([a, b]) => [pl.c[0]+a*pl.u[0]+b*pl.v[0], pl.c[1]+a*pl.u[1]+b*pl.v[1], pl.c[2]+a*pl.u[2]+b*pl.v[2]]), edges };
+}
+function convexHull2(P) {
+  if (P.length < 3) return P;
+  const cross = (o, a, b) => (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0]);
+  const lower = [];
+  for (const p of P) { while (lower.length >= 2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop(); lower.push(p); }
+  const upper = [];
+  for (let i = P.length - 1; i >= 0; i--) { const p = P[i]; while (upper.length >= 2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop(); upper.push(p); }
+  lower.pop(); upper.pop();
+  return lower.concat(upper);
+}
+
+// ============ D3.5：点按放置（射线 × 各平面，取凸包区域内最近命中；锚点记录平面局部基 n/u/v） ============
+function placeAnchorBest(px, py) {
+  const dirW = mv33(poseR, [(px - cx) / focal, (py - cy) / focal, 1]);
+  let best = null;
+  for (const pl of planes) {
+    if (!pl.hull2 || pl.hull2.length < 3 || !pl.c) continue;
+    const dn = dot3(pl.n, dirW);
+    if (Math.abs(dn) < 1e-4) continue;
+    const t = -(dot3(pl.n, poseT) + pl.d) / dn;
+    if (t <= 0) continue;
+    const w = [poseT[0]+t*dirW[0], poseT[1]+t*dirW[1], poseT[2]+t*dirW[2]];
+    const on = sub3(w, pl.c);
+    if (!inHull2([dot3(on, pl.u), dot3(on, pl.v)], pl.hull2)) continue;   // 必须落在已判定区域内
+    if (!best || t < best.t) best = { t, w, pl };
+  }
+  if (!best) return null;
+  return { w: best.w, n: [...best.pl.n], u: [...best.pl.u], v: [...best.pl.v] };
+}
+// 点按=放锚点；双指捏合=变焦。按下只记账，抬起才落锚——移动超阈值/第二指落下/捏合中均取消
+let tapX = 0, tapY = 0, tapCancel = false;
+let pinchD0 = 0, pinchZ0 = 1, pinchLive = false;
+overlay.addEventListener('pointerdown', (e) => {
+  if (!e.isPrimary) { tapCancel = true; return; }   // 第二指落下 → 本次手势是捏合不是点按
+  tapX = e.clientX; tapY = e.clientY; tapCancel = false;
+});
+overlay.addEventListener('pointermove', (e) => {
+  if (e.buttons && Math.hypot(e.clientX - tapX, e.clientY - tapY) > 12) tapCancel = true;
+});
+overlay.addEventListener('pointercancel', () => { tapCancel = true; });
+overlay.addEventListener('pointerup', (e) => {
+  if (!e.isPrimary || tapCancel || pinchLive) return;
+  if (!planes.length) { setMsg('平面未就绪：继续缓慢移动扫描，待"平面数"变绿后再点按。', true); return; }
+  const r = overlay.getBoundingClientRect();
+  const px = (e.clientX - r.left) / r.width * procW, py = (e.clientY - r.top) / r.height * procH;
+  const a = placeAnchorBest(px, py);
+  if (a) { anchors.push(a); setMsg('锚点已放置（共 ' + anchors.length + ' 个）。走远回看验证钉住。'); }
+  else setMsg('该点不在任何已判定平面区域内——请点彩色凸包内部。', true);
+});
+// 捏合变焦（overlay touch-action:none，浏览器不会劫持为页面缩放；applyConstraints 内部已节流排队）
+function pinchDist(t) { return Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY); }
+overlay.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 2 && zoomCaps) { pinchLive = true; pinchD0 = pinchDist(e.touches); pinchZ0 = curZoom; }
+}, { passive: true });
+overlay.addEventListener('touchmove', (e) => {
+  if (pinchLive && e.touches.length === 2 && pinchD0 > 0) setZoom(pinchZ0 * pinchDist(e.touches) / pinchD0);
+}, { passive: true });
+overlay.addEventListener('touchend', (e) => { if (e.touches.length < 2) pinchLive = false; }, { passive: true });
+
+// ============ D3：丢踪恢复（KF 快照双路：LK + 最近邻） ============
+function tryRecover() {
+  if (!kf || kf.pts.length < REC_MIN_PAIRS) return false;
+  recPyr.build(imgU8, false);                    // 恢复专用 4 层金字塔（~60px 位移包线）
+  const m = kf.pts.length;
+  for (let i = 0; i < m; i++) { xyPrev[i*2] = kf.pts[i].x; xyPrev[i*2+1] = kf.pts[i].y; }
+  jsfeat.optical_flow_lk.track(kfPyr, recPyr, xyPrev, xyCurr, m, LK_WIN, LK_ITER, lkStatus, LK_EPS, LK_EIGEN);
+  // 前向-反向一致性校验（FB）：反跟踪回原位 <1px 才保留——杀接缝/错锁假配对（恢复位移大，必需）
+  jsfeat.optical_flow_lk.track(recPyr, kfPyr, xyCurr, xyBack, m, LK_WIN, LK_ITER, lkStatusB, LK_EPS, LK_EIGEN);
+  for (let i = 0; i < m; i++) {
+    if (lkStatus[i] !== 1 || lkStatusB[i] !== 1) { lkStatus[i] = 0; continue; }
+    if (Math.hypot(xyBack[i*2] - xyPrev[i*2], xyBack[i*2+1] - xyPrev[i*2+1]) > 1.0) lkStatus[i] = 0;
+  }
+  // 配对 {kx,ky,cx2,cy2,w3d}
+  const pairs = [];
+  for (let i = 0; i < m; i++) {
+    if (lkStatus[i] !== 1) continue;
+    pairs.push({ kx: kf.pts[i].x, ky: kf.pts[i].y, cx2: xyCurr[i*2], cy2: xyCurr[i*2+1], w3d: kf.pts[i].w3d });
+  }
+  // 最近邻补充（遮挡后 LK 跟不上时：FAST 会在原位出角点）
+  if (pairs.length < REC_MIN_PAIRS) {
+    const nc = Math.min(jsfeat.fast_corners.detect(imgU8, cornerPool, BORDER), cornerPool.length);
+    const used = new Set(pairs.map(q => q.kx * 1000 + q.ky | 0));
+    for (const kp of kf.pts) {
+      if (used.has(kp.x * 1000 + kp.y | 0)) continue;
+      let bestJ = -1, bestD = NN_MATCH_PX;
+      for (let j = 0; j < nc; j++) {
+        const dd = Math.hypot(cornerPool[j].x - kp.x, cornerPool[j].y - kp.y);
+        if (dd < bestD) { bestD = dd; bestJ = j; }
+      }
+      if (bestJ >= 0) pairs.push({ kx: kp.x, ky: kp.y, cx2: cornerPool[bestJ].x, cy2: cornerPool[bestJ].y, w3d: kp.w3d });
+    }
+  }
+  if (pairs.length < REC_MIN_PAIRS) return false;
+  const w3dPairs = pairs.filter(q => q.w3d);
+  if (w3dPairs.length < REC_MIN_W3D) return false;
+  // E：KF 2D vs 当前 2D
+  const n = pairs.length;
+  const x1 = new Float64Array(n), y1 = new Float64Array(n), x2 = new Float64Array(n), y2 = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    x1[i] = (pairs[i].kx - cx) / focal; y1[i] = (pairs[i].ky - cy) / focal;
+    x2[i] = (pairs[i].cx2 - cx) / focal; y2[i] = (pairs[i].cy2 - cy) / focal;
+  }
+  const est = estimateE(x1, y1, x2, y2, n);
+  if (!est) return false;
+  const sol = recoverPose(est.E, x1, y1, x2, y2, est.mask, n);
+  if (!sol) return false;
+  // 尺度：旧 3D 点在 KF 系已知深度 / 新三角化深度
+  const ratios = [];
+  for (let i = 0; i < n; i++) {
+    if (!est.mask[i] || !pairs[i].w3d) continue;
+    const X = triangulate(sol.R, sol.t, x1[i], y1[i], x2[i], y2[i]);
+    if (!X || X[2] <= 0) continue;
+    const zk = camPt(kf.R, kf.T, pairs[i].w3d)[2];
+    if (zk > 0) ratios.push(zk / X[2]);
+  }
+  if (ratios.length < REC_MIN_W3D) return false;
+  ratios.sort((a, b) => a - b);
+  const s = ratios[ratios.length >> 1];
+  if (!(s > SCALE_MIN && s < SCALE_MAX)) return false;
+  // 位姿接回旧世界系
+  const Rwn = mul33(kf.R, tr33(sol.R));
+  const dt = mv33(Rwn, sol.t);
+  const Tn = [kf.T[0]-s*dt[0], kf.T[1]-s*dt[1], kf.T[2]-s*dt[2]];
+  // 重投影校验：3D 点经新位姿投影应落回当前观测
+  const errs = [];
+  for (let i = 0; i < n; i++) {
+    if (!est.mask[i] || !pairs[i].w3d) continue;
+    const pr = projectW(Rwn, Tn, pairs[i].w3d);
+    if (pr) errs.push(Math.hypot(pr[0] - pairs[i].cx2, pr[1] - pairs[i].cy2));
+  }
+  if (errs.length < REC_MIN_W3D) return false;
+  errs.sort((a, b) => a - b);
+  if (errs[errs.length >> 1] > REPRO_TH) return false;
+  // 恢复成功：位姿接管，pts 重建（带 w3d 继续跟踪），基线=当前帧；锚点不动=重锚
+  poseR = Rwn; poseT = Tn;
+  pts = pairs.map(q => ({
+    x: q.cx2, y: q.cy2, px: q.cx2, py: q.cy2, kx: q.cx2, ky: q.cy2, kSet: true,
+    age: 2, trail: [[q.cx2, q.cy2]], inlier: true, w3d: q.w3d ? [...q.w3d] : null, n3: null, planeIdx: -1
+  }));
+  path.push([poseT[0], poseT[2]]);
+  recoveries++;
+  return true;
+}
+
+// ============ IMU（松耦合：仅丢踪外推 + 静止陀螺零偏估计） ============
+function onOrientation(e) {
+  imuEvtCnt++;
+  if (e.alpha === null) { imuNullCnt++; return; }
+  const d = Math.PI / 360;
+  const a = e.alpha * d, b = e.beta * d, g = e.gamma * d;
+  const ca = Math.cos(a), sa = Math.sin(a), cb = Math.cos(b), sb = Math.sin(b), cg = Math.cos(g), sg = Math.sin(g);
+  imuQ = [
+    ca*cb*cg - sa*sb*sg,
+    sa*cb*cg + ca*sb*sg,
+    ca*sb*cg - sa*cb*sg,
+    ca*cb*sg + sa*sb*cg
+  ];
+  imuReady = true;
+}
+function imuDeltaR() {
+  if (!imuQ || !imuQPrev) return null;
+  const [w1,x1,y1,z1] = imuQPrev, [w2,x2,y2,z2] = imuQ;
+  const w = w2*w1 + x2*x1 + y2*y1 + z2*z1;
+  const x = x2*w1 - w2*x1 + y2*z1 - z2*y1;
+  const y = y2*w1 - w2*y1 + z2*x1 - x2*z1;
+  const z = z2*w1 - w2*z1 + x2*y1 - y2*x1;
+  return [
+    1-2*(y*y+z*z), 2*(x*y-w*z),   2*(x*z+w*y),
+    2*(x*y+w*z),   1-2*(x*x+z*z), 2*(y*z-w*x),
+    2*(x*z-w*y),   2*(y*z+w*x),   1-2*(x*x+y*y)
+  ];
+}
+if (window.DeviceOrientationEvent) {
+  window.addEventListener('deviceorientationabsolute', onOrientation, true);
+  window.addEventListener('deviceorientation', onOrientation, true);
+}
+if (window.DeviceMotionEvent) {
+  window.addEventListener('devicemotion', (e) => {
+    motionEvtCnt++;
+    // 重力方向诊断（portrait 映射假设：cam=[ax,-ay,-az]，真机标定校验口）
+    const ag = e.accelerationIncludingGravity;
+    if (ag && ag.x !== null) {
+      const g = norm3([ag.x, -ag.y, -ag.z]);
+      gravCam = gravCam ? norm3([gravCam[0]*0.95+g[0]*0.05, gravCam[1]*0.95+g[1]*0.05, gravCam[2]*0.95+g[2]*0.05]) : g;
+    }
+    const r = e.rotationRate;
+    if (!r || r.alpha === null) return;
+    lastRate = [r.alpha, r.beta, r.gamma];
+    if (imuEvtCnt > 0 && imuReady && !imuViaGyro) return;
+    const dt = e.interval > 0 ? e.interval / 1000 : 0.016;
+    if (!imuQ) imuQ = [1, 0, 0, 0];
+    const dq = [1,
+      (r.beta  - gyroBias[1]) * Math.PI / 360 * dt,
+      (r.gamma - gyroBias[2]) * Math.PI / 360 * dt,
+      (r.alpha - gyroBias[0]) * Math.PI / 360 * dt];
+    imuQ = qnorm(qmul(imuQ, dq));
+    imuReady = true; imuViaGyro = true;
+  }, true);
+}
+
+// ============ 主循环 ============
+let lostFrameCnt = 0, lastVidT = -1;
+function loop(t) {
+  if (!running) return;
+  requestAnimationFrame(loop);
+  if (video.readyState < 2 || !video.videoWidth) return;
+  // 只处理新视频帧：高刷屏（Reno14=120Hz）rAF 远快于流帧率（超广角=30fps），重复帧光流≈0 但 IMU
+  // 在转 → 焦距标定 f 虚高数倍（"广角画面度数却很低"的根因）、静止判定误触发污染陀螺零偏
+  if (video.currentTime === lastVidT) return;
+  lastVidT = video.currentTime;
+  const t0 = performance.now();
+
+  procCtx.drawImage(video, 0, 0, procW, procH);
+  jsfeat.imgproc.grayscale(procCtx.getImageData(0, 0, procW, procH).data, procW, procH, imgU8);
+
+  // ---- 暗帧门控（MenthaAR：太暗暂停视觉，防污染；锚点按冻结位姿继续画=钉住） ----
+  let lum = 0;
+  for (let i = 0; i < imgU8.data.length; i += 16) lum += imgU8.data[i];
+  lum /= (imgU8.data.length / 16);
+  const dark = lum < DARK_TH;
+  if (dark) { darkCnt++; if (state === 'TRACK') state = 'LOST'; }
+
+  [pyrPrev, pyrCurr] = [pyrCurr, pyrPrev];
+  if (!dark) pyrCurr.build(imgU8, false);
+
+  // ---- LK 跟踪 ----
+  let corresp = null;
+  if (!dark && pts.length > 0 && lastT > 0) {
+    for (let i = 0; i < pts.length; i++) {
+      xyPrev[i*2] = pts[i].x; xyPrev[i*2+1] = pts[i].y;
+      pts[i].px = pts[i].x; pts[i].py = pts[i].y;
+    }
+    jsfeat.optical_flow_lk.track(pyrPrev, pyrCurr, xyPrev, xyCurr, pts.length, LK_WIN, LK_ITER, lkStatus, LK_EPS, LK_EIGEN);
+    const alive = [];
+    for (let i = 0; i < pts.length; i++) {
+      if (lkStatus[i] === 1) {
+        const p = pts[i];
+        p.x = xyCurr[i*2]; p.y = xyCurr[i*2+1]; p.age++;
+        p.trail.push([p.x, p.y]);
+        if (p.trail.length > TRAIL) p.trail.shift();
+        alive.push(p);
+      }
+    }
+    pts = alive;
+    corresp = true;
+  }
+  if (!dark && pts.length < REDETECT) { detectPoints(); redetects++; }
+
+  // ---- 位姿估计（基线累积，同 D2） + D3 尺度传播/点云/关键帧 ----
+  let rotDeg = null, tDir = null, inliers = 0;
+  const dRimu = imuDeltaR();
+  const imuRot = dRimu ? rotAngle(dRimu) : null;
+  const kPtIdx = [];
+  for (let i = 0; i < pts.length; i++) if (pts[i].kSet) kPtIdx.push(i);
+  let medFlow = 0;
+  if (kPtIdx.length > 0) {
+    const flows = kPtIdx.map(i => Math.hypot(pts[i].x - pts[i].kx, pts[i].y - pts[i].ky)).sort((a, b) => a - b);
+    medFlow = flows[flows.length >> 1];
+  }
+  if (!dark && corresp && kPtIdx.length >= MIN_PTS_POSE && medFlow >= PARALLAX_TH) {
+    const n = kPtIdx.length;
+    const x1 = new Float64Array(n), y1 = new Float64Array(n), x2 = new Float64Array(n), y2 = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const p = pts[kPtIdx[i]];
+      x1[i] = (p.kx - cx) / focal; y1[i] = (p.ky - cy) / focal;
+      x2[i] = (p.x  - cx) / focal; y2[i] = (p.y  - cy) / focal;
+    }
+    const est = estimateE(x1, y1, x2, y2, n);
+    if (est) {
+      inliers = est.inliers;
+      const sol = recoverPose(est.E, x1, y1, x2, y2, est.mask, n);
+      if (sol) {
+        rotDeg = rotAngle(sol.R); tDir = sol.t;
+        const ROT_CAP = 6.0;
+        const imuDisagree = imuRot !== null && Math.abs(rotDeg - imuRot) > 4.0;
+        if (rotDeg > ROT_CAP || imuDisagree) {
+          if (dRimu) { poseR = mul33(poseR, tr33(dRimu)); }
+          rejects++;
+          tDir = null; rotDeg = imuRot;
+        } else {
+          const sc = scaleAndCloud(kPtIdx, sol, est.mask);   // 尺度不可信 → null → 丢弃本次运动
+          if (sc) {
+            lastS = sc.s;
+            path.push([poseT[0], poseT[2]]);
+            if (path.length > 600) path.shift();
+            snapshotKF();
+            updateMap();                         // 持久地图合并 + 多平面分割 + 低模网格（重力多簇 + 顺序RANSAC）
+          } else {
+            rejects++;
+            tDir = null;
+          }
+        }
+        for (const p of pts) { p.kx = p.x; p.ky = p.y; p.kSet = true; }
+        state = 'TRACK';
+        for (let i = 0; i < n; i++) pts[kPtIdx[i]].inlier = !!est.mask[i];
+      } else state = 'LOST';
+    } else state = 'LOST';
+  } else if (!dark && corresp && kPtIdx.length < MIN_PTS_POSE && pts.length >= MIN_PTS_POSE) {
+    if (!kf) {
+      // 世界未建立：D2 式基线重建（初始化）
+      for (const p of pts) { p.kx = p.x; p.ky = p.y; p.kSet = true; }
+      state = 'TRACK';
+    } else state = 'LOST';   // 世界已建立：禁止裸重建（锚点会跳），只能走恢复
+  } else if (!dark && corresp && (state === 'LOST' || state === 'IMU')) {
+    state = 'LOST';
+  }
+
+  // ---- 丢踪：IMU 外推 + 双路恢复 ----
+  if (state === 'LOST') {
+    if (dRimu) { poseR = mul33(poseR, tr33(dRimu)); state = 'IMU'; }
+    lostFrameCnt++;
+    if (!dark && kf && lostFrameCnt % 2 === 0 && tryRecover()) { state = 'TRACK'; setMsg('追踪已恢复，锚点重锚。'); }
+    else if (lostFrameCnt === 90 && kf) setMsg('追踪丢失：请对准刚才扫描过的区域，自动重锚中…', true);
+  } else lostFrameCnt = 0;
+  imuQPrev = imuQ;
+
+  // ---- 焦距自标定（纯旋转期：Δpx = f·Δθ；IMU 给 Δθ，LK 帧间流给 Δpx） ----
+  // 根因修复：多摄机型默认高倍裁切流（实测 ≈5×）→ 焦距假设错 → 三角化深度按比例错 → 锚点钉不住
+  if (!dark && corresp && imuRot !== null && imuRot > 0.2 && imuRot < 4 && pts.length >= 40) {
+    const mags = [];
+    let ux = 0, uy = 0;
+    for (const p of pts) {
+      const dx = p.x - p.px, dy = p.y - p.py, m = Math.hypot(dx, dy);
+      if (m > 0.5 && m < 40) { mags.push(m); ux += dx / m; uy += dy / m; }
+    }
+    if (mags.length >= 30) {
+      const Rdir = Math.hypot(ux, uy) / mags.length;       // 流向一致性：纯旋转时全场同向（1=完全一致）
+      mags.sort((a, b) => a - b);
+      const med = mags[mags.length >> 1];
+      if (Rdir > 0.9 && med > 1) {
+        const fEst = med / (imuRot * Math.PI / 180);
+        if (fEst > 150 && fEst < 4000) fSamples.push(fEst);
+      }
+    }
+  }
+  if (fSamples.length >= 30 && t - lastCalT > 2000) {      // 2s 节律收敛评估
+    const sorted = [...fSamples].sort((a, b) => a - b);
+    const fMed = sorted[sorted.length >> 1];
+    if (Math.abs(fMed - focal) / focal > 0.05) {
+      rescaleWorld(fMed / focal);
+      focal = fMed;
+    }
+    fSamples = []; lastCalT = t; fStale = false;
+    // 视场闭环：收敛后仍窄（<60°=主摄裁切模式）→ 自动重开掷下一次（物理镜头选择=每开流一次骰子）
+    const fovNow = 2 * Math.atan(procW / 2 / focal) * 180 / Math.PI;
+    if (fovNow < 60 && camTrack) {
+      if (wideRetries < 3) {
+        wideRetries++; fStale = true;
+        setMsg(`视场 ${fovNow.toFixed(0)}° 仍窄，自动重开试广角（第 ${wideRetries} 次）…`);
+        reopenCam();
+      } else if (!window.__wideGaveUp) {
+        window.__wideGaveUp = true;
+        setMsg('自动重开 3 次仍是窄视场——请手动点任意档位按钮再试（度数带 ? = 未重新标定）', true);
+      }
+    }
+  }
+
+  // ---- 静止抖动统计 + 陀螺零偏估计（中位流速<0.3px 视为静止） ----
+  if (state === 'TRACK') {
+    let flows = [];
+    for (const p of pts) if (p.inlier) flows.push(Math.hypot(p.x - p.px, p.y - p.py));
+    flows.sort((a, b) => a - b);
+    const med = flows.length ? flows[flows.length >> 1] : 99;
+    if (med < 0.3) {
+      if (rotDeg !== null) { jitWin.push(rotDeg); if (jitWin.length > 90) jitWin.shift(); }
+      if (lastRate) {
+        biasWin.push(lastRate);
+        if (biasWin.length > 120) biasWin.shift();
+        if (biasWin.length > 30) {
+          gyroBias = [0,1,2].map(k => biasWin.reduce((a, r) => a + r[k], 0) / biasWin.length);
+        }
+      }
+    }
+  }
+  let jit = null;
+  if (jitWin.length > 20) {
+    const mu = jitWin.reduce((a, b) => a + b, 0) / jitWin.length;
+    jit = Math.sqrt(jitWin.reduce((a, b) => a + (b - mu) * (b - mu), 0) / jitWin.length);
+  }
+
+  const ms = performance.now() - t0;
+
+  // ---- 渲染叠加 ----
+  octx.clearRect(0, 0, procW, procH);
+  octx.lineWidth = 1.2;
+  for (const p of pts) {
+    const col = p.age < 2 ? '#ffb829' : (p.planeIdx >= 0 ? PLANE_COLORS[p.planeIdx % 4] : (p.inlier ? '#2ee6a8' : '#ff5a5a'));
+    if (p.trail.length > 1 && p.planeIdx < 0) {
+      octx.strokeStyle = p.inlier ? 'rgba(128,82,255,.8)' : 'rgba(255,90,90,.7)';
+      octx.beginPath();
+      octx.moveTo(p.trail[0][0], p.trail[0][1]);
+      for (let i = 1; i < p.trail.length; i++) octx.lineTo(p.trail[i][0], p.trail[i][1]);
+      octx.stroke();
+    }
+    octx.fillStyle = col;
+    octx.beginPath(); octx.arc(p.x, p.y, 2.2, 0, 6.2832); octx.fill();
+  }
+  // 持久地图点（世界系，转向不消失=目视判据）→ 多平面凸包+低模网格（每平面一色）→ 锚点线框立方体
+  for (const q of mapPts) {
+    const pr = projectW(poseR, poseT, q.w);
+    if (!pr) continue;
+    octx.fillStyle = q.plane >= 0 ? PLANE_COLORS[q.plane % 4] : '#9a9a9a';
+    octx.globalAlpha = q.plane >= 0 ? 0.55 : 0.35;
+    octx.fillRect(pr[0] - 0.8, pr[1] - 0.8, 1.6, 1.6);
+  }
+  octx.globalAlpha = 1;
+  planes.forEach((pl, pi) => {
+    const col = PLANE_COLORS[pi % PLANE_COLORS.length];
+    if (pl.hull && pl.hull.length >= 3) {
+      const hp = pl.hull.map(X => projectW(poseR, poseT, X));
+      if (hp.every(Boolean)) {
+        octx.beginPath();
+        octx.moveTo(hp[0][0], hp[0][1]);
+        for (let i = 1; i < hp.length; i++) octx.lineTo(hp[i][0], hp[i][1]);
+        octx.closePath();
+        octx.fillStyle = col + '1f'; octx.fill();
+        octx.strokeStyle = col + '99'; octx.lineWidth = 1.5; octx.stroke();
+      }
+    }
+    if (pl.mesh) {
+      const vp = pl.mesh.v3.map(X => projectW(poseR, poseT, X));
+      octx.beginPath();
+      for (const [a, b] of pl.mesh.edges) {
+        if (!vp[a] || !vp[b]) continue;
+        octx.moveTo(vp[a][0], vp[a][1]); octx.lineTo(vp[b][0], vp[b][1]);
+      }
+      octx.strokeStyle = col + '47'; octx.lineWidth = 1; octx.stroke();
+    }
+  });
+  for (const a of anchors) {
+    const dist = Math.hypot(a.w[0]-poseT[0], a.w[1]-poseT[1], a.w[2]-poseT[2]);
+    const L = Math.max(0.02, dist * 0.12);
+    const c = [];
+    for (const sz of [0, 1]) for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+      c.push([
+        a.w[0] + (sx*a.u[0] + sy*a.v[0]) * L/2 + sz*a.n[0]*L,
+        a.w[1] + (sx*a.u[1] + sy*a.v[1]) * L/2 + sz*a.n[1]*L,
+        a.w[2] + (sx*a.u[2] + sy*a.v[2]) * L/2 + sz*a.n[2]*L
+      ]);
+    }
+    const proj = c.map(X => projectW(poseR, poseT, X));
+    const edges = [[0,1],[0,2],[1,3],[2,3],[4,5],[4,6],[5,7],[6,7],[0,4],[1,5],[2,6],[3,7]];
+    octx.strokeStyle = state === 'TRACK' ? '#ffb829' : (state === 'IMU' ? '#ffb829' : '#ff5a5a');
+    octx.lineWidth = 2;
+    for (const [i, j] of edges) {
+      if (!proj[i] || !proj[j]) continue;
+      octx.beginPath(); octx.moveTo(proj[i][0], proj[i][1]); octx.lineTo(proj[j][0], proj[j][1]); octx.stroke();
+    }
+    const pc = projectW(poseR, poseT, a.w);
+    if (pc) {
+      octx.fillStyle = '#ffb829';
+      octx.beginPath(); octx.arc(pc[0], pc[1], 3, 0, 6.2832); octx.fill();
+    }
+  }
+
+  // ---- 轨迹俯视图（含锚点） ----
+  pctx.fillStyle = '#0a0a0a'; pctx.fillRect(0, 0, 360, 360);
+  pctx.strokeStyle = '#1c1c1c';
+  for (let g = 0; g <= 360; g += 60) { pctx.beginPath(); pctx.moveTo(g, 0); pctx.lineTo(g, 360); pctx.stroke(); pctx.beginPath(); pctx.moveTo(0, g); pctx.lineTo(360, g); pctx.stroke(); }
+  if (path.length > 1) {
+    let minX = 1e9, maxX = -1e9, minZ = 1e9, maxZ = -1e9;
+    for (const [x, z] of path) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z); }
+    const span = Math.max(maxX - minX, maxZ - minZ, 1e-6) * 1.2;
+    const mx = (minX + maxX) / 2, mz = (minZ + maxZ) / 2;
+    const sx = v => 180 + (v - mx) / span * 320, sz = v => 180 + (v - mz) / span * 320;
+    pctx.strokeStyle = '#8052ff'; pctx.lineWidth = 2;
+    pctx.beginPath(); pctx.moveTo(sx(path[0][0]), sz(path[0][1]));
+    for (const [x, z] of path) pctx.lineTo(sx(x), sz(z));
+    pctx.stroke();
+    pctx.fillStyle = '#2ee6a8';
+    pctx.beginPath(); pctx.arc(sx(path[0][0]), sz(path[0][1]), 4, 0, 6.2832); pctx.fill();
+    pctx.fillStyle = '#fff';
+    pctx.beginPath(); pctx.arc(sx(poseT[0]), sz(poseT[2]), 4, 0, 6.2832); pctx.fill();
+    pctx.fillStyle = 'rgba(154,154,154,.5)';
+    for (let i = 0; i < mapPts.length; i += 3) { const w = mapPts[i].w; pctx.fillRect(sx(w[0]) - 1, sz(w[2]) - 1, 2, 2); }
+    pctx.fillStyle = '#ffb829';
+    for (const a of anchors) pctx.fillRect(sx(a.w[0]) - 3, sz(a.w[2]) - 3, 6, 6);
+  }
+
+  // ---- HUD ----
+  if (lastT > 0) {
+    fpsWin.push(1000 / Math.max(1, t - lastT));
+    if (fpsWin.length > 30) fpsWin.shift();
+    const fps = fpsWin.reduce((a, b) => a + b, 0) / fpsWin.length;
+    hFps.textContent = fps.toFixed(0);
+    hFps.className = 'v ' + (fps >= 20 ? 'good' : fps >= 12 ? 'warn' : 'bad');
+  }
+  lastT = t;
+  hMs.textContent = ms.toFixed(1);
+  hPts.textContent = pts.length;
+  hCloud.textContent = mapPts.length;
+  hPlane.textContent = planes.length || '…';
+  hPlane.className = 'v ' + (planes.length ? 'good' : 'warn');
+  hAnch.textContent = anchors.length;
+  hRec.textContent = recoveries;
+  hRec.className = 'v ' + (recoveries > 0 ? 'good' : '');
+  pState.textContent = dark ? '暗帧' : state === 'TRACK' ? '跟踪中' : state === 'IMU' ? 'IMU 外推' : state === 'LOST' ? '丢失' : '初始化';
+  pState.className = state === 'TRACK' && !dark ? 'stTrack' : state === 'IMU' ? 'stImu' : 'stLost';
+  pS.textContent = lastS !== null ? lastS.toFixed(2) : '–';
+  pF.textContent = focal.toFixed(0) + (fSamples.length ? `(${fSamples.length})` : '');
+  // 视场角由收敛焦距反推（客观真值，不靠目测）：主摄 1× 正常 ≈70~80°，明显偏小=流是中心裁切模式
+  // 带 ? = 焦距未重新标定（切档/变焦后需转动手机重收敛，此前显示的是旧值）
+  $('pFov').textContent = (2 * Math.atan(procW / 2 / focal) * 180 / Math.PI).toFixed(0) + (fStale ? '?' : '');
+  pDark.textContent = darkCnt;
+  let hPlaneRef = null;                                  // 重力-法向校验口：取最大水平面（重力锁路径）
+  for (const pl of planes) if (pl.lockN && (!hPlaneRef || pl.inl > hPlaneRef.inl)) hPlaneRef = pl;
+  if (hPlaneRef && gravCam) {
+    const nCam = mv33(tr33(poseR), hPlaneRef.n);   // 世界法向 → 相机系
+    pGrav.textContent = (Math.acos(Math.min(1, Math.abs(dot3(nCam, gravCam)))) * 180 / Math.PI).toFixed(0);
+  } else pGrav.textContent = '–';
+  pPos.textContent = poseT.map(v => v.toFixed(2)).join(', ');
+  pJit.textContent = jit !== null ? jit.toFixed(2) : '–';
+  pImu.textContent = imuReady ? (imuViaGyro ? `陀螺仪(${motionEvtCnt}) bias≈${gyroBias.map(b=>b.toFixed(1)).join('/')}` : `已连接(${imuEvtCnt})`)
+    : imuEvtCnt > 0 ? `事件${imuEvtCnt}次但数据空`
+    : motionEvtCnt > 0 ? `仅motion(${motionEvtCnt})` : '无事件(浏览器不支持?)';
+  pImu.className = imuReady ? '' : 'bad';
+  pRej.textContent = rejects;
+
+  // ---- 日志 ----
+  if (window.__log.length < 3600) {
+    window.__log.push({ t: +t.toFixed(1), state, dark, s: lastS, pos: [...poseT], map: mapPts.length, plane: planes.length, anch: anchors.length, rec: recoveries, inl: inliers, pts: pts.length, ms: +ms.toFixed(1) });
+  }
+}
+
+// ============ 输入源 ============
+// 视频框等比适配屏内（宽≤100%、高≤72vh）：高分辨率档不再挤爆页面；任何分辨率显示尺寸一致
+const vpWrap = $('vpWrap');
+function fitVideo() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh) return;
+  const s = Math.min($('stage').clientWidth / vw, (window.innerHeight * 0.72) / vh);
+  vpWrap.style.width = Math.round(vw * s) + 'px';
+  vpWrap.style.height = Math.round(vh * s) + 'px';
+}
+video.addEventListener('loadedmetadata', fitVideo);
+video.addEventListener('resize', fitVideo);        // 视场档位切换后轨道尺寸变化
+window.addEventListener('resize', fitVideo);       // 屏幕旋转/页面缩放
+function startLoop() {
+  if (running) return;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw) return;
+  procW = PROC_W; procH = Math.round(PROC_W * vh / vw) & ~1;
+  allocStructs(); resetAll();
+  running = true; lastT = 0;
+  requestAnimationFrame(loop);
+}
+function setMsg(text, err) { msg.innerHTML = text; msg.className = err ? 'err' : ''; }
+
+$('btnCam').onclick = async () => {
+  setMsg('请求摄像头权限…');
+  try {
+    await openCam(-1);
+    setMsg('运行中。①先原地缓慢左右转动手机几秒（焦距自标定，看 f 读数收敛）；②再横移扫描出平面区域；③点按放方块。');
+    startLoop();
+  } catch (e) { setMsg('摄像头失败：' + e.name, true); }
+};
+// 摄像头枚举（静默诊断，结果存 __cams；本机实测只暴露前后摄，无超广角独立设备）
+let camDevs = [], camIdx = -1;
+async function listCams() {
+  try {
+    const ds = await navigator.mediaDevices.enumerateDevices();
+    camDevs = ds.filter(d => d.kind === 'videoinput');
+    window.__cams = camDevs.map(d => d.label || '(无标签)');
+    if (!$('zoomBar').hidden && !zoomCaps) buildZoomBar();   // 授权后才有标签 → 刷新提示行（确认超广角是否藏为独立设备）
+  } catch (e) {}
+}
+// ============ 变焦控制（倍率按钮 + 捏合手势共用；变焦改变有效焦距 → 标定样本清零重收敛） ============
+function showTrackInfo() {
+  if (!camTrack) return;
+  const st = camTrack.getSettings ? camTrack.getSettings() : {};
+  $('pZoom').textContent = `${st.width || '?'}×${st.height || '?'} · ${st.frameRate ? Math.round(st.frameRate) + 'fps' : '?fps'} · ${st.resizeMode || '?'} · zoom ${st.zoom ?? '不支持'}` +
+    (zoomCaps ? `（可调 ${zoomCaps.min}~${zoomCaps.max}）` : '');
+}
+let zoomBusy = false, zoomPending = null;
+async function setZoom(z) {
+  if (!camTrack || !zoomCaps) return;
+  z = Math.min(zoomCaps.max, Math.max(zoomCaps.min, Math.round(z * 100) / 100));
+  if (zoomBusy) { zoomPending = z; return; }      // 捏合期间高频调用 → 只保留最新值排队
+  zoomBusy = true;
+  try {
+    try { await camTrack.applyConstraints({ advanced: [{ zoom: z }] }); }
+    catch (e1) { await camTrack.applyConstraints({ zoom: z }); }   // 有的实现只认顶层形式
+    const actual = camTrack.getSettings ? camTrack.getSettings().zoom : null;
+    curZoom = actual ?? z;
+    if (actual != null && Math.abs(actual - z) > 0.06)
+      setMsg(`变焦请求 ${z}× 但实际仍是 ${actual}×——本浏览器拒绝执行变焦`, true);
+    if (window.__zoom) window.__zoom.now = curZoom;
+    fSamples = []; lastCalT = 0; fStale = true;  // 有效焦距变了 → 重新收敛（偏差>5% 时世界按比例重塑）
+    showTrackInfo(); markZoomBar();
+  } catch (e) {
+    setMsg('变焦调用报错：' + e.name + (e.message ? '（' + e.message + '）' : ''), true);  // Fail Loud，不再静默吞错
+  }
+  zoomBusy = false;
+  if (zoomPending !== null) { const p = zoomPending; zoomPending = null; setZoom(p); }
+}
+function markZoomBar() {
+  const bar = $('zoomBar');
+  for (const b of bar.querySelectorAll('button'))
+    b.classList.toggle('on', Math.abs(parseFloat(b.dataset.z) - curZoom) < 0.05);
+  const info = $('zoomInfo');
+  if (info && zoomCaps) info.textContent = `当前 ${Math.round(curZoom * 10) / 10}× · 可调范围 ${zoomCaps.min}~${zoomCaps.max}`;
+}
+function buildZoomBar() {
+  const bar = $('zoomBar'); bar.innerHTML = ''; bar.hidden = false;
+  const info = document.createElement('span'); info.id = 'zoomInfo'; info.className = 'zoomInfo';
+  if (!zoomCaps) {
+    const labels = (window.__cams || []).join('、') || '(枚举无标签)';
+    info.textContent = `zoom 不支持 · 枚举摄像头：${labels} → 本浏览器调不了视场，请换 Chrome 对比`;
+    bar.appendChild(info);
+    return;
+  }
+  const presets = [...new Set([zoomCaps.min, 1, 2].filter(v => v >= zoomCaps.min - 1e-6 && v <= zoomCaps.max + 1e-6))].sort((a, b) => a - b);
+  for (const v of presets) {
+    const b = document.createElement('button');
+    b.textContent = (Math.round(v * 10) / 10) + '×';
+    b.dataset.z = v;
+    b.onclick = () => setZoom(v);
+    bar.appendChild(b);
+  }
+  bar.appendChild(info);
+  markZoomBar();
+}
+// ============ 视场档位（分辨率请求引导浏览器选原生 sensor 模式：低分辨率档在部分机型=中心裁切→视场窄；高档位=全视场合并读出） ============
+const RES_PRESETS = [0, 480, 960, 1440, 2448];   // 0=自动(不指定)；值=短边像素，按 4:3 请求（贴近相机 app 全传感器比例）
+let curRes = 960, resBusy = false;               // Reno14 实测：960 是唯一落到超广角 sensor 的档（zoom min=1 的绕行路径），默认开流即用它
+// 黑屏看门狗：轮询 currentTime 是否前进（轨道静音/假活时视频时间冻结）
+function waitFrames(timeoutMs) {
+  return new Promise((resolve) => {
+    const t0 = video.currentTime, tStart = Date.now();
+    const iv = setInterval(() => {
+      if (video.currentTime > t0 + 0.05) { clearInterval(iv); resolve(true); }
+      else if (Date.now() - tStart > timeoutMs) { clearInterval(iv); resolve(false); }
+    }, 200);
+  });
+}
+async function setRes(short) {
+  if (!camTrack || resBusy) return;
+  resBusy = true; curRes = short; markResBar();
+  try {
+    await reopenCam();                          // 分辨率走重开流（热切换在部分安卓浏览器黑屏）
+    if (!(await waitFrames(3000))) {
+      curRes = 0; markResBar();
+      await reopenCam();                        // 回退自动档
+      setMsg(`短边 ${short || '自动'} 档黑屏无画面——本机不支持该模式，已回退自动档`, true);
+    } else {
+      fSamples = []; lastCalT = 0; fStale = true;  // 视场若变，有效焦距跟着变 → 标定重收敛
+      wideRetries = 0; window.__wideGaveUp = false;  // 手动切档=新的骰子 → 重置自动重开预算
+      const st = camTrack.getSettings ? camTrack.getSettings() : {};
+      setMsg(`已切到 ${short || '自动'} 档（实际 ${st.width || '?'}×${st.height || '?'}）。<b>原地转动手机几秒重新标定焦距，"视场"度数才会更新</b>。`);
+    }
+  } catch (e) {
+    setMsg('视场档位切换报错：' + e.name + (e.message ? '（' + e.message + '）' : ''), true);
+  }
+  resBusy = false;
+}
+function markResBar() {
+  for (const b of $('resBar').querySelectorAll('button'))
+    b.classList.toggle('on', parseInt(b.dataset.v) === curRes);
+}
+function buildResBar() {
+  const bar = $('resBar'); bar.innerHTML = ''; bar.hidden = false;
+  const lab = document.createElement('span'); lab.className = 'zoomInfo'; lab.textContent = '视场档位';
+  bar.appendChild(lab);
+  for (const v of RES_PRESETS) {
+    const b = document.createElement('button');
+    b.textContent = v === 960 ? '960广角' : (v ? String(v) : '自动');
+    b.dataset.v = v;
+    b.onclick = () => setRes(v);
+    bar.appendChild(b);
+  }
+  markResBar();
+}
+let firstOpenDone = false;
+async function openCam(idx) {
+  camIdx = idx; await reopenCam();
+  // Reno14 实测：冷启动首开落在主摄裁切模式（视场 41°），相同约束重开一次才落超广角——浏览器冷热状态的模式选择差异
+  if (!firstOpenDone) {
+    firstOpenDone = true;
+    setMsg('首开完成，自动重开一次切换广角…');
+    await waitFrames(1500);
+    await reopenCam();
+    fSamples = []; lastCalT = 0; fStale = true;
+  }
+}
+// 开流/重开流：resizeMode:'none' = 禁止浏览器裁切/缩放传感器输出；分辨率只作打开约束（不热切换）
+async function reopenCam() {
+  const cons = { video: { resizeMode: 'none' }, audio: false };
+  if (curRes) { cons.video.width = { ideal: curRes * 4 / 3 }; cons.video.height = { ideal: curRes }; }
+  if (camIdx >= 0 && camDevs[camIdx]) cons.video.deviceId = { exact: camDevs[camIdx].deviceId };
+  else cons.video.facingMode = { ideal: 'environment' };
+  const stream = await navigator.mediaDevices.getUserMedia(cons);
+  if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
+  video.srcObject = stream; await video.play();
+  // 档位宽高比变了（如落到 16:9 模式）→ 视觉状态作废，软重置
+  if (running) {
+    const newProcH = Math.round(PROC_W * video.videoHeight / video.videoWidth) & ~1;
+    if (Math.abs(newProcH - procH) > 4) {
+      procW = PROC_W; procH = newProcH; allocStructs(); resetAll();
+    }
+  }
+  // 修正默认变焦：部分多摄机型（实测 OPPO）默认流是高倍裁切（≈5×）→ 拉回最小倍率
+  try {
+    camTrack = stream.getVideoTracks()[0];
+    const caps = camTrack.getCapabilities ? camTrack.getCapabilities() : {};
+    zoomCaps = caps.zoom || null;
+    if (zoomCaps) await camTrack.applyConstraints({ advanced: [{ zoom: zoomCaps.min || 1 }] });
+    curZoom = camTrack.getSettings ? (camTrack.getSettings().zoom ?? 1) : 1;
+    window.__zoom = zoomCaps ? { min: zoomCaps.min, max: zoomCaps.max, now: curZoom } : null;
+    window.__track = { caps: { zoom: zoomCaps, resizeMode: caps.resizeMode || null }, settings: camTrack.getSettings ? camTrack.getSettings() : {} };
+    (window.__opens = window.__opens || []).push({ w: window.__track.settings.width, h: window.__track.settings.height, fps: window.__track.settings.frameRate, zoom: curZoom });  // 首开/重开参数对比诊断（__dump 可见）
+    showTrackInfo();
+    buildZoomBar();
+    buildResBar();
+  } catch (e) { window.__zoom = 'err:' + e.name; $('pZoom').textContent = 'err ' + e.name; }
+  listCams();
+}
+$('btnFile').onclick = () => $('fileIn').click();
+$('fileIn').onchange = (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  if (video.srcObject) { video.srcObject.getTracks().forEach(t => t.stop()); video.srcObject = null; }
+  video.src = URL.createObjectURL(f); video.loop = true;
+  video.play().then(() => { setMsg('回放模式：' + f.name); startLoop(); });
+};
+$('btnReset').onclick = () => { resetAll(); setMsg('已重置（位姿/点云/平面/锚点全清）。'); };
+
+// ============ 桌面自验（无摄像头数学真值测试；chrome console: __selftest()） ============
+window.__selftest = function () {
+  const saveW = procW, saveH = procH, saveF = focal, saveCx = cx, saveCy = cy;
+  procW = 320; procH = 240; focal = 320; cx = 160; cy = 120;
+  const out = [];
+  const rotY = th => { const c = Math.cos(th), s = Math.sin(th); return [c,0,s, 0,1,0, -s,0,c]; };
+  // 场景：平面 z=5 上 60 点 + 空间散布 20 点
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  const planePts = [], freePts = [];
+  for (let i = 0; i < 60; i++) planePts.push([rnd(-2, 2), rnd(-1.5, 1.5), 5 + rnd(-0.02, 0.02)]);
+  for (let i = 0; i < 20; i++) freePts.push([rnd(-2, 2), rnd(-1.5, 1.5), rnd(3, 6)]);
+  const world = planePts.concat(freePts);
+  // 相机1=世界系；相机2：绕Y转5°，平移 |t|=0.51
+  const R_true = rotY(5 * Math.PI / 180), t_true = [0.5, 0.02, 0.1];
+  const proj = (R, t, X) => {  // cam2 系投影：Xc = R·X + t
+    const Xc = mv33(R, X);
+    return [(Xc[0] + t[0]) / (Xc[2] + t[2]), (Xc[1] + t[1]) / (Xc[2] + t[2])];
+  };
+  const x1 = [], y1 = [], x2 = [], y2 = [];
+  for (const X of world) {
+    if (X[2] <= 0.5) continue;
+    const q = proj(R_true, t_true, X);
+    if (X[0]/X[2] < -0.9 || X[0]/X[2] > 0.9) continue;
+    x1.push(X[0] / X[2]); y1.push(X[1] / X[2]); x2.push(q[0]); y2.push(q[1]);
+  }
+  // T1：E 估计 + 位姿分解 + 尺度恢复
+  const est = estimateE(Float64Array.from(x1), Float64Array.from(y1), Float64Array.from(x2), Float64Array.from(y2), x1.length);
+  if (!est) { out.push('T1 FAIL: E 估计失败'); }
+  else {
+    const sol = recoverPose(est.E, Float64Array.from(x1), Float64Array.from(y1), Float64Array.from(x2), Float64Array.from(y2), est.mask, x1.length);
+    const Rerr = rotAngle(mul33(sol.R, tr33(R_true)));
+    const tn = norm3(sol.t), tt = norm3(t_true);
+    const tcos = dot3(tn, tt);
+    // 尺度：旧点=世界坐标，KF=单位位姿（cam1）
+    const ratios = [];
+    for (let i = 0; i < x1.length; i++) {
+      if (!est.mask[i]) continue;
+      const X = triangulate(sol.R, sol.t, x1[i], y1[i], x2[i], y2[i]);
+      if (X && X[2] > 0) ratios.push(world[i][2] / X[2]);
+    }
+    ratios.sort((a, b) => a - b);
+    const s = ratios[ratios.length >> 1];
+    const sTrue = Math.hypot(...t_true);
+    const sErr = Math.abs(s - sTrue) / sTrue;
+    out.push(`T1 位姿+尺度: R误差=${Rerr.toFixed(2)}°(<2) t方向cos=${tcos.toFixed(3)}(>0.99) s=${s.toFixed(3)} vs ${sTrue.toFixed(3)} 误差=${(sErr*100).toFixed(0)}%(<15%) → ${Rerr < 2 && tcos > 0.99 && sErr < 0.15 ? 'PASS' : 'FAIL'}`);
+  }
+  // ---- D3.5：多平面 / 持久化 / 低模网格 / 选面锚点 ----
+  poseT = [0, 0, 0]; poseR = I3();
+  gravCam = [0, -1, 0];
+  const mkPt = w => ({ w, n: null, plane: -1 });
+  // T2 重力多簇：地面 8 点(y=2) + 桌台 16 点(y=0.5) + 等距散布 15 点（间距 0.36 > 2thr 不成簇）→ 两个水平层各自返回
+  mapPts = [];
+  for (let i = 0; i < 8; i++) mapPts.push(mkPt([rnd(-2, 2), 2 + rnd(-0.03, 0.03), rnd(2, 6)]));
+  for (let i = 0; i < 16; i++) mapPts.push(mkPt([rnd(-2, 2), 0.5 + rnd(-0.03, 0.03), rnd(2, 6)]));
+  for (let i = 0; i < 15; i++) mapPts.push(mkPt([rnd(-2, 2), -1.5 + i * 0.36 + rnd(-0.05, 0.05), rnd(2, 6)]));
+  planes = []; pts = [];
+  updateMap();
+  const ds = planes.filter(p => p.lockN).map(p => Math.abs(p.d)).sort((a, b) => a - b);
+  const ok2 = planes.length >= 2 && ds.length >= 2 && Math.abs(ds[0] - 0.5) < 0.15 && Math.abs(ds[1] - 2) < 0.15;
+  out.push(`T2 重力多簇（地面+桌台各自返回）: 平面数=${planes.length}(≥2) |d|=[${ds.map(v=>v.toFixed(2)).join(',')}]（应含 ≈0.5 与 ≈2） 内点=[${planes.map(p=>p.inl).join(',')}] → ${ok2 ? 'PASS' : 'FAIL'}`);
+  // T2b 持久化+去重幂等：活点清空（模拟转向）→ 地图/平面不丢；同位置点重新入图 → 不膨胀
+  const mapN0 = mapPts.length, plN0 = planes.length;
+  const meshOk0 = planes.length >= 2 && planes[0].mesh && planes[1].mesh && planes[0].mesh.edges.length > 0 && planes[1].mesh.edges.length > 0;
+  pts = [];
+  updateMap();
+  const persistOk = mapPts.length === mapN0 && planes.length === plN0;
+  pts = mapPts.slice(0, 12).map(q => ({ w3d: [...q.w], planeIdx: -1 }));
+  updateMap();
+  const ok2b = persistOk && mapPts.length === mapN0 && meshOk0;
+  out.push(`T2b 持久化+去重幂等: 转向后地图 ${mapN0}→${mapPts.length}（应不变）平面 ${plN0}→${planes.length}（应不变）网格齐=${meshOk0} → ${ok2b ? 'PASS' : 'FAIL'}`);
+  // T4 地面+墙面：地面 60(y=2) + 墙 70(x=3, y∈[-1,3]) → 重力层只出地面（竖墙摊开无达标滑窗），墙面走顺序 RANSAC
+  mapPts = [];
+  for (let i = 0; i < 60; i++) mapPts.push(mkPt([rnd(-2, 2), 2 + rnd(-0.02, 0.02), rnd(2, 6)]));
+  for (let i = 0; i < 70; i++) mapPts.push(mkPt([3 + rnd(-0.02, 0.02), rnd(-1, 3), rnd(2, 6)]));
+  planes = []; pts = [];
+  updateMap();
+  const hasFloor = planes.some(p => Math.abs(p.n[1]) > 0.9 && Math.abs(Math.abs(p.d) - 2) < 0.15);
+  const hasWall = planes.some(p => Math.abs(p.n[0]) > 0.9 && Math.abs(Math.abs(p.d) - 3) < 0.15);
+  const ok4 = hasFloor && hasWall;
+  out.push(`T4 地面+墙面双平面: 平面数=${planes.length} 法向=[${planes.map(p=>p.n.map(v=>v.toFixed(1)).join('/')).join(' | ')}] 地面=${hasFloor} 墙=${hasWall} → ${ok4 ? 'PASS' : 'FAIL'}`);
+  gravCam = null;
+  // T5 Delaunay 数学真值：30 随机点 → 三角形数 = 2n-2-h（欧拉），面积和 = 凸包面积
+  const P5 = [];
+  for (let i = 0; i < 30; i++) P5.push([rnd(0, 10), rnd(0, 10)]);
+  const tris5 = delaunay2(P5);
+  const hull5 = convexHull2([...P5].sort((a, b) => a[0]-b[0] || a[1]-b[1]));
+  let areaT = 0;
+  for (const t of tris5) {
+    const a = P5[t[0]], b = P5[t[1]], c = P5[t[2]];
+    areaT += Math.abs((b[0]-a[0])*(c[1]-a[1]) - (c[0]-a[0])*(b[1]-a[1])) / 2;
+  }
+  let areaH = 0;
+  for (let i = 0; i < hull5.length; i++) { const a = hull5[i], b = hull5[(i+1)%hull5.length]; areaH += a[0]*b[1] - b[0]*a[1]; }
+  areaH = Math.abs(areaH) / 2;
+  const ok5 = tris5.length === 2*30 - 2 - hull5.length && Math.abs(areaT - areaH) / areaH < 1e-6;
+  out.push(`T5 Delaunay: 三角形=${tris5.length}(=${2*30-2-hull5.length}) 面积和=${areaT.toFixed(4)} vs 凸包=${areaH.toFixed(4)} → ${ok5 ? 'PASS' : 'FAIL'}`);
+  // T3 选面锚点：两张水平桌台 y=0.5/y=1（面内 x∈[-2,2], z∈[1.5,5.5]）；像素(160,200) 先命中近面 y=0.5；向上射线(160,10) 无命中
+  mapPts = []; pts = []; planes = [];
+  for (const yy of [0.5, 1]) {
+    planes.push({ n: [0, 1, 0], d: -yy, lockN: true, u: [1, 0, 0], v: [0, 0, 1], c: [0, yy, 3.5],
+      inl: 20, inlIdx: [], thr: 0.1, hull2: [[-2,-2],[2,-2],[2,2],[-2,2]], hull: null, mesh: null, lastMeshT: 0 });
+  }
+  const a3 = placeAnchorBest(160, 200);   // dirW=[0,0.25,1] → t=2 命中 y=0.5 于 [0,0.5,2]（凸包内）；y=1 面 t=4 更远
+  const a3null = placeAnchorBest(160, 10); // 向上射线：两平面都在相机下方 → null
+  const ok3 = a3 && Math.abs(a3.w[1] - 0.5) < 1e-6 && Math.abs(a3.w[2] - 2) < 1e-6 && a3null === null;
+  out.push(`T3 射线×最近凸包: 锚点=${a3 ? a3.w.map(v=>v.toFixed(2)).join(',') : 'null'}（应≈0,0.5,2） 界外拒绝=${a3null === null} → ${ok3 ? 'PASS' : 'FAIL'}`);
+  // T6 焦距重塑：rescaleWorld(2) → 平面 d / 地图点 / 锚点同步 ×2
+  mapPts.push(mkPt([1, 2, 3]));
+  anchors.push(a3 || { w: [0, 0.5, 2], n: [0,1,0], u: [1,0,0], v: [0,0,1] });
+  rescaleWorld(2);
+  const ok6 = Math.abs(planes[0].d + 1) < 1e-9 && Math.abs(mapPts[0].w[1] - 4) < 1e-9 && Math.abs(anchors[0].w[2] - 4) < 1e-9;
+  out.push(`T6 世界按比例重塑: 平面d=${planes[0].d.toFixed(2)}(=-1) 地图点y=${mapPts[0].w[1]}(=4) 锚点z=${anchors[0].w[2]}(=4) → ${ok6 ? 'PASS' : 'FAIL'}`);
+  gravCam = null; resetAll();
+  procW = saveW; procH = saveH; focal = saveF; cx = saveCx; cy = saveCy; poseT = [0, 0, 0];
+  return out.join('\n');
+};
+</script>
+</body>
+</html>

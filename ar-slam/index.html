@@ -52,9 +52,15 @@ footer a{border-bottom:1px solid #333}
   </a>
 
   <a class="milestone" href="d3-anchor.html">
-    <div class="row"><span class="name">D3 · 平面锚定 + 丢踪保持</span><span class="badge doing">待真机验收</span></div>
-    <p class="desc">尺度传播稀疏点云 → 逐点法向 + 重力 1-DOF 投票/法向 RANSAC 双路平面分割（凸包显示平面区域）→ 点按放置方块；丢踪时 KF 快照 LK/最近邻双路恢复，IMU 外推锚点不消失；暗帧门控 + 陀螺零偏静止估计 + 多镜头切换探针。</p>
+    <div class="row"><span class="name">D3 · 平面锚定 + 丢踪保持</span><span class="badge todo">锚定暂挂</span></div>
+    <p class="desc">尺度传播稀疏点云 → 逐点法向 + 重力 1-DOF 投票/法向 RANSAC 双路平面分割（凸包显示平面区域）→ 点按放置方块；丢踪时 KF 快照 LK/最近邻双路恢复，IMU 外推锚点不消失；暗帧门控 + 陀螺零偏静止估计。摄像头链已收官（960 档=超广角，焦距自标定）；锚定第三步未过——平面识别不稳，转 D3.5 空间持久化后回看。</p>
     <p class="accept">走开 2~3m 回看偏移可接受（参照：Quest 3 困难环境 APE&gt;10cm）；遮挡 2s 恢复或优雅提示</p>
+  </a>
+
+  <a class="milestone" href="d35-map.html">
+    <div class="row"><span class="name">D3.5 · 空间持久化 + 多平面地图</span><span class="badge doing">待真机验收</span></div>
+    <p class="desc">视野外点位不丢：世界系持久地图（空间哈希去重累积）→ 多平面分割（重力滑窗多簇返回地面/桌面 + 顺序 RANSAC 提墙面，独立凸包）→ 面内 Delaunay 低模网格（≤160 顶点/面，随新点云重三角化）→ 射线×最近凸包放锚点。锚定基于持久地图重做（D3 第三步回看项）。</p>
+    <p class="accept">扫描出 ≥2 个平面（各色凸包+网格）；转身离开再转回区域不消失；方块走远 2~3m 回看钉住</p>
   </a>
 
   <div class="milestone">
