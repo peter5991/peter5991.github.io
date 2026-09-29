@@ -13,9 +13,11 @@ body{background:var(--void);color:var(--bone);font-family:"PingFang SC","Microso
 header{padding:14px 16px 10px;display:flex;align-items:baseline;justify-content:space-between}
 h1{font-size:16px;font-weight:700}
 header a{font-size:12px;color:var(--ash)}
-#stage{position:relative;width:100%;background:#0a0a0a;overflow:hidden}
-#cam{display:block;width:100%;height:auto}
-#overlay{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
+#stage{position:relative;width:100%;background:#0a0a0a;overflow:hidden;text-align:center}
+#vpWrap{position:relative;display:inline-block;line-height:0;max-width:100%}
+#cam{display:block;width:100%;height:100%}
+/* pan-y：单指竖滑=原生页面滚动；双指捏合不由浏览器处理 → 归 JS 变焦 */
+#overlay{position:absolute;inset:0;width:100%;height:100%;touch-action:pan-y}
 #hud{display:flex;border-top:1px solid #1c1c1c;border-bottom:1px solid #1c1c1c;flex-wrap:wrap}
 #hud .cell{flex:1;min-width:14%;padding:8px 2px;text-align:center}
 #hud .v{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums}
@@ -58,8 +60,10 @@ footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-heig
 </header>
 
 <div id="stage">
-  <video id="cam" playsinline muted autoplay></video>
-  <canvas id="overlay"></canvas>
+  <div id="vpWrap">
+    <video id="cam" playsinline muted autoplay></video>
+    <canvas id="overlay"></canvas>
+  </div>
 </div>
 
 <div id="hud">
@@ -1036,6 +1040,18 @@ function loop(t) {
 }
 
 // ============ 输入源 ============
+// 视频框等比适配屏内（宽≤100%、高≤72vh）：高分辨率档不再挤爆页面；任何分辨率显示尺寸一致
+const vpWrap = $('vpWrap');
+function fitVideo() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh) return;
+  const s = Math.min($('stage').clientWidth / vw, (window.innerHeight * 0.72) / vh);
+  vpWrap.style.width = Math.round(vw * s) + 'px';
+  vpWrap.style.height = Math.round(vh * s) + 'px';
+}
+video.addEventListener('loadedmetadata', fitVideo);
+video.addEventListener('resize', fitVideo);        // 视场档位切换后轨道尺寸变化
+window.addEventListener('resize', fitVideo);       // 屏幕旋转/页面缩放
 function startLoop() {
   if (running) return;
   const vw = video.videoWidth, vh = video.videoHeight;
