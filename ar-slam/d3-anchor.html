@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="noindex">
 <link rel="icon" href="data:,">
 <title>D3 · 平面锚定 + 丢踪保持</title>
@@ -15,7 +15,7 @@ h1{font-size:16px;font-weight:700}
 header a{font-size:12px;color:var(--ash)}
 #stage{position:relative;width:100%;background:#0a0a0a;overflow:hidden}
 #cam{display:block;width:100%;height:auto}
-#overlay{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
+#overlay{position:absolute;inset:0;width:100%;height:100%;touch-action:manipulation}
 #hud{display:flex;border-top:1px solid #1c1c1c;border-bottom:1px solid #1c1c1c;flex-wrap:wrap}
 #hud .cell{flex:1;min-width:14%;padding:8px 2px;text-align:center}
 #hud .v{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums}
@@ -33,6 +33,16 @@ button.primary{background:var(--iris);border-color:var(--iris)}
 #msg{padding:0 16px 10px;font-size:12px;color:var(--ash);line-height:1.7}
 #msg.err{color:var(--red)}
 footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-height:1.6}
+/* 手机适配：数据面板纵向堆叠（轨迹图缩到上方小图，数据全宽），HUD 两行三列 */
+@media (max-width: 640px) {
+  #poseBar{flex-direction:column;align-items:center}
+  #poseInfo{width:100%;line-height:2}
+  #pathCv{flex:none;width:min(60vw,220px);height:auto;order:2}
+  #hud .cell{min-width:30%}
+  #hud .v{font-size:16px}
+  #controls{flex-wrap:wrap}
+  #controls button{flex:1 1 40%}
+}
 </style>
 </head>
 <body>
@@ -71,12 +81,13 @@ footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-heig
 <div id="controls">
   <button class="primary" id="btnCam">启动摄像头</button>
   <button id="btnFile">回放视频文件</button>
+  <button id="btnLens">镜头×1</button>
   <button id="btnReset">重置全部</button>
   <input type="file" id="fileIn" accept="video/*" hidden>
 </div>
 
-<p id="msg">验收三步：①缓慢移动扫描环境，点云增长、平面冻结后<b>点按画面</b>放置方块；②走开 2~3m 回看——方块应钉在原位；③手掌遮镜头 2s 拿开——方块不消失，恢复计数 +1。</p>
-<footer>jsfeat (MIT) · D2 位姿链 + 尺度传播稀疏点云 → RANSAC 平面（解构 MenthaAR Plane 思路，不搬 GPL 代码）→ 射线求交锚点 · 丢踪=KF 快照 LK/最近邻双路恢复 · 暗帧门控</footer>
+<p id="msg">验收三步：①缓慢移动扫描环境，平面区域（青色凸包）出现后<b>点按画面</b>放置方块；②走开 2~3m 回看——方块应钉在原位；③手掌遮镜头 2s 拿开——方块不消失，恢复计数 +1。</p>
+<footer>jsfeat (MIT) · D2 位姿链 + 尺度传播稀疏点云 → 逐点法向(邻域PCA) + 重力 1-DOF 投票 / 法向一致 RANSAC 双路平面分割 + 凸包范围（Quest Scene Mesh 思路稀疏适配）→ 射线求交锚点 · 丢踪=KF 快照 LK/最近邻双路恢复（FB 校验）· 暗帧门控 · 陀螺零偏估计</footer>
 
 <script src="vendor/jsfeat-min.js"></script>
 <script>
@@ -92,6 +103,7 @@ const PARALLAX_TH = 2.0;
 const SCALE_MIN = 0.05, SCALE_MAX = 20;      // 尺度传播可信域（只挡三角化崩坏的荒谬值；基线长度随场景深度自然变化）
 const SCALE_MIN_OLD = 8;                     // 尺度估计最少旧点
 const PLANE_ITER = 80, PLANE_MIN_INL = 20, PLANE_INL_RATIO = 0.45, PLANE_THR_K = 0.03; // 阈值=K×中位场景距离
+const GRAV_MIN_VOTES = 8;                    // 重力投票路径最少票数（1-DOF 投票，低纹理地面也达标）
 const REPRO_TH = 3.0;                        // 恢复重投影中位误差阈值 px
 const REC_MIN_PAIRS = 25, REC_MIN_W3D = 8;   // 恢复最少匹配/带3D匹配
 const DARK_TH = 15;                          // 暗帧门控（MenthaAR 思路）：均值亮度低于此暂停视觉
@@ -133,7 +145,8 @@ let jitWin = [];
 // D3：关键帧 / 点云 / 平面 / 锚点 / 恢复
 let kf = null, kfImg = null, kfPyr = null, recPyr = null;   // kf={R,T,pts:[{x,y,w3d}]}；恢复专用 4 层金字塔（主链 3 层追不上大位移）
 let cloudN = 0;
-let planeN = null, planeD = 0, planeInl = 0, planeFrozen = false;
+let planeN = null, planeD = 0, planeInl = 0, planeReady = false;   // 平面持续精修（EMA）；锚点放下即世界固定点，不随平面更新动
+let planeHull = null;                            // 平面范围凸包（世界系 3D 顶点环，"点连成面"）
 let anchors = [];                                // [{w:[x,y,z]}]
 let recoveries = 0, darkCnt = 0, lastS = null, gravCam = null;
 // IMU
@@ -174,7 +187,7 @@ function allocStructs() {
 }
 function resetAll() {
   pts = []; poseR = I3(); poseT = [0,0,0]; path = []; state = 'INIT'; jitWin = []; rejects = 0;
-  kf = null; cloudN = 0; planeN = null; planeFrozen = false; planeInl = 0;
+  kf = null; cloudN = 0; planeN = null; planeReady = false; planeInl = 0; planeHull = null;
   anchors = []; recoveries = 0; darkCnt = 0; lastS = null;
   window.__log.length = 0;
 }
@@ -196,7 +209,7 @@ function detectPoints() {
   const picked = [...best.values()].sort((a, b) => cornerPool[b].score - cornerPool[a].score);
   for (let i = 0; i < Math.min(need, picked.length); i++) {
     const c = cornerPool[picked[i]];
-    pts.push({ x: c.x, y: c.y, px: c.x, py: c.y, kx: c.x, ky: c.y, kSet: false, age: 0, trail: [[c.x, c.y]], inlier: true, w3d: null, isPlane: false });
+    pts.push({ x: c.x, y: c.y, px: c.x, py: c.y, kx: c.x, ky: c.y, kSet: false, age: 0, trail: [[c.x, c.y]], inlier: true, w3d: null, n3: null, isPlane: false });
   }
 }
 
@@ -367,45 +380,169 @@ function snapshotKF() {
   };
 }
 
-// ============ D3：平面 RANSAC（首个合格平面冻结=钉住语义） ============
-function fitPlaneCloud(cloud) {
-  if (cloud.length < PLANE_MIN_INL + 5) return null;
-  let med = [];
-  for (const X of cloud) med.push(Math.hypot(X[0]-poseT[0], X[1]-poseT[1], X[2]-poseT[2]));
-  med.sort((a, b) => a - b);
-  const thr = Math.max(1e-4, PLANE_THR_K * med[med.length >> 1]);   // 尺度任意 → 自适应阈值
-  let best = null;
-  for (let it = 0; it < PLANE_ITER; it++) {
-    const i = Math.random()*cloud.length | 0, j = Math.random()*cloud.length | 0, k = Math.random()*cloud.length | 0;
-    if (i === j || j === k || i === k) continue;
-    const A = cloud[i], B = cloud[j], C = cloud[k];
-    let n = cross3(sub3(B, A), sub3(C, A));
-    const nn = Math.hypot(n[0], n[1], n[2]);
-    if (nn < 1e-9) continue;
-    n = [n[0]/nn, n[1]/nn, n[2]/nn];
-    const d = -dot3(n, A);
-    let cnt = 0;
-    for (const X of cloud) if (Math.abs(dot3(n, X) + d) < thr) cnt++;
-    if (!best || cnt > best.count) best = { n, d, count: cnt };
-  }
-  if (!best || best.count < PLANE_MIN_INL || best.count / cloud.length < PLANE_INL_RATIO) return null;
-  return best;
-}
-function tryFreezePlane() {
+// ============ D3+：逐点法向 + 法向一致平面分割（Quest Scene Mesh 思路的稀疏点云适配） ============
+// 每个点用 3D 邻域 PCA 估法向 → RANSAC 候选要求采样点法向互一致，内点=位置+法向双一致
+// → 重力方向软打分（水平面优先）→ 内点 PCA 精修平面方程 → EMA 时序平滑
+function computeCloudNormals() {
   const cloud = [];
-  for (const p of pts) if (p.w3d) cloud.push(p.w3d);
-  const fit = fitPlaneCloud(cloud);
-  if (!fit) return;
-  // 法向统一朝向相机：平面上一点 = -d·n，法向应指向相机中心
-  const onPlane = [-fit.d*fit.n[0], -fit.d*fit.n[1], -fit.d*fit.n[2]];
-  if (dot3(fit.n, sub3(poseT, onPlane)) < 0) { fit.n = neg33(fit.n); fit.d = -fit.d; }
-  planeN = fit.n; planeD = fit.d; planeInl = fit.count; planeFrozen = true;
-  // 按同一相对阈值标记平面内点（渲染青色）
-  let med = [];
-  for (const p of pts) if (p.w3d) med.push(Math.hypot(p.w3d[0]-poseT[0], p.w3d[1]-poseT[1], p.w3d[2]-poseT[2]));
-  med.sort((a, b) => a - b);
-  const thr2 = Math.max(1e-4, PLANE_THR_K * (med.length ? med[med.length >> 1] : 1));
-  for (const p of pts) if (p.w3d && Math.abs(dot3(planeN, p.w3d) + planeD) < thr2) p.isPlane = true;
+  for (const p of pts) if (p.w3d) cloud.push(p);
+  if (cloud.length < 12) return;
+  const dists = cloud.map(p => Math.hypot(p.w3d[0]-poseT[0], p.w3d[1]-poseT[1], p.w3d[2]-poseT[2])).sort((a,b)=>a-b);
+  const r2 = (0.15 * dists[dists.length >> 1]) ** 2;      // 邻域半径=中位场景距离 15%
+  for (const p of cloud) {
+    const nbr = [];
+    for (const q of cloud) {
+      if (q === p) continue;
+      const dx=q.w3d[0]-p.w3d[0], dy=q.w3d[1]-p.w3d[1], dz=q.w3d[2]-p.w3d[2];
+      if (dx*dx+dy*dy+dz*dz < r2) { nbr.push(q); if (nbr.length >= 12) break; }
+    }
+    if (nbr.length < 5) { p.n3 = null; continue; }
+    let mx=0,my=0,mz=0;
+    for (const q of nbr) { mx+=q.w3d[0]; my+=q.w3d[1]; mz+=q.w3d[2]; }
+    mx/=nbr.length; my/=nbr.length; mz/=nbr.length;
+    let cxx=0,cxy=0,cxz=0,cyy=0,cyz=0,czz=0;
+    for (const q of nbr) {
+      const dx=q.w3d[0]-mx, dy=q.w3d[1]-my, dz=q.w3d[2]-mz;
+      cxx+=dx*dx; cxy+=dx*dy; cxz+=dx*dz; cyy+=dy*dy; cyz+=dy*dz; czz+=dz*dz;
+    }
+    const C = new jsfeat.matrix_t(3,3,jsfeat.F64_t|jsfeat.C1_t);
+    C.data.set([cxx,cxy,cxz, cxy,cyy,cyz, cxz,cyz,czz]);
+    const V = new jsfeat.matrix_t(3,3,jsfeat.F64_t|jsfeat.C1_t);
+    jsfeat.linalg.eigenVV(C, V);
+    let n = [V.data[6], V.data[7], V.data[8]];             // 最小特征向量=末行（同 nullVector9 约定）
+    if (dot3(n, sub3(poseT, p.w3d)) < 0) n = neg33(n);     // 朝相机定向
+    p.n3 = n;
+  }
+}
+function updatePlane() {
+  computeCloudNormals();
+  const cloud = [];
+  for (const p of pts) if (p.w3d) cloud.push(p);
+  if (cloud.length < 10) return;
+  const dists = cloud.map(p => Math.hypot(p.w3d[0]-poseT[0], p.w3d[1]-poseT[1], p.w3d[2]-poseT[2])).sort((a,b)=>a-b);
+  const thr = Math.max(1e-4, PLANE_THR_K * dists[dists.length >> 1]);
+  const cands = [];
+  // 路径A（主，需重力）：水平面只剩偏移 d 未知 → 沿重力轴一维滑窗投票。
+  // 低纹理地面点稀也能检出（≥GRAV_MIN_VOTES 票）——重力先验把平面自由度砍到 1
+  if (gravCam) {
+    const gw = mv33(poseR, gravCam);                       // 世界上方向
+    const offs = cloud.map(p => dot3(gw, p.w3d)).sort((a, b) => a - b);
+    const wins = [];
+    for (let i = 0, j = 0; i < offs.length; i++) {         // 滑窗 [o, o+2thr] 收集所有达标簇
+      while (offs[i] - offs[j] > 2 * thr) j++;
+      if (i - j + 1 >= GRAV_MIN_VOTES) wins.push({ j, i, cnt: i - j + 1 });
+    }
+    if (wins.length) {
+      // 地面先验：最低达标层为基线；更高水平层（桌台/书架）需点数 ≥1.5× 才接管
+      let lowest = null, lmed = Infinity, topCnt = 0, topW = null;
+      for (const w of wins) {
+        const med = offs[(w.j + w.i) >> 1];
+        if (med < lmed) { lmed = med; lowest = w; }
+        if (w.cnt > topCnt) { topCnt = w.cnt; topW = w; }
+      }
+      const bw = (topW !== lowest && topCnt >= lowest.cnt * 1.5) ? topW : lowest;
+      const os = [];
+      for (let k = bw.j; k <= bw.i; k++) os.push(offs[k]);
+      let n = [...gw], d = -os[os.length >> 1];            // 中位偏移
+      const onP = [-d*n[0], -d*n[1], -d*n[2]];
+      if (dot3(n, sub3(poseT, onP)) < 0) { n = neg33(n); d = -d; }   // 法向朝相机
+      let cnt = 0;
+      for (const p of cloud) if (Math.abs(dot3(n, p.w3d) + d) < thr) cnt++;
+      cands.push({ n, d, count: cnt, min: GRAV_MIN_VOTES, ratioMin: 0, lockN: true });   // A: 重力锁+1-DOF 精确，占比门豁免（低纹理地面点占比天然低）
+    }
+  }
+  // 路径B（回退/无重力/非水平面）：法向一致 3 点 RANSAC（密纹理场景）
+  const cN = cloud.filter(p => p.n3);
+  if (cN.length >= 8) {
+    let best = null;
+    for (let it = 0; it < PLANE_ITER; it++) {
+      const A = cN[Math.random()*cN.length|0], B = cN[Math.random()*cN.length|0], C = cN[Math.random()*cN.length|0];
+      if (A === B || B === C || A === C) continue;
+      if (dot3(A.n3,B.n3) < 0.87 || dot3(B.n3,C.n3) < 0.87) continue;   // 采样点法向互一致（30°）
+      let n = cross3(sub3(B.w3d, A.w3d), sub3(C.w3d, A.w3d));
+      const nn = Math.hypot(n[0], n[1], n[2]);
+      if (nn < 1e-9) continue;
+      n = [n[0]/nn, n[1]/nn, n[2]/nn];
+      const mn = norm3([A.n3[0]+B.n3[0]+C.n3[0], A.n3[1]+B.n3[1]+C.n3[1], A.n3[2]+B.n3[2]+C.n3[2]]);
+      if (dot3(n, mn) < 0) n = neg33(n);                     // 与采样点法向对齐（取代"朝相机"启发式）
+      const d = -dot3(n, A.w3d);
+      let cnt = 0;
+      for (const p of cN) if (Math.abs(dot3(n, p.w3d) + d) < thr && dot3(p.n3, n) > 0.87) cnt++;
+      let score = cnt;
+      if (gravCam) score *= 1 + Math.abs(dot3(mv33(tr33(poseR), n), gravCam));   // 水平面软加分
+      if (!best || score > best.score) best = { n, d, count: cnt, score };
+    }
+    if (best) cands.push({ n: best.n, d: best.d, count: best.count, min: PLANE_MIN_INL, ratioMin: PLANE_INL_RATIO, lockN: false });
+  }
+  // 先各自过门槛（A 豁免占比门），再在合格者中取内点最多——B 占比挂掉不能拖死合格的 A
+  const ok = cands.filter(c => c.count >= c.min && c.count / cloud.length >= c.ratioMin);
+  if (!ok.length) return;
+  let pick = ok[0];
+  for (const c of ok) if (c.count > pick.count) pick = c;
+  const inl = [];
+  for (const p of cloud) if (Math.abs(dot3(pick.n, p.w3d) + pick.d) < thr) inl.push(p);
+  let nFit = pick.n, dFit = pick.d;
+  if (!pick.lockN) {
+    // 内点 PCA 精修（总最小二乘），比 3 点采样平面稳；重力锁法向路径只精修 d（投票中位已是 1-DOF 最优）
+    let mx=0,my=0,mz=0;
+    for (const p of inl) { mx+=p.w3d[0]; my+=p.w3d[1]; mz+=p.w3d[2]; }
+    mx/=inl.length; my/=inl.length; mz/=inl.length;
+    let cxx=0,cxy=0,cxz=0,cyy=0,cyz=0,czz=0;
+    for (const p of inl) {
+      const dx=p.w3d[0]-mx, dy=p.w3d[1]-my, dz=p.w3d[2]-mz;
+      cxx+=dx*dx; cxy+=dx*dy; cxz+=dx*dz; cyy+=dy*dy; cyz+=dy*dz; czz+=dz*dz;
+    }
+    const Cm = new jsfeat.matrix_t(3,3,jsfeat.F64_t|jsfeat.C1_t);
+    Cm.data.set([cxx,cxy,cxz, cxy,cyy,cyz, cxz,cyz,czz]);
+    const Vm = new jsfeat.matrix_t(3,3,jsfeat.F64_t|jsfeat.C1_t);
+    jsfeat.linalg.eigenVV(Cm, Vm);
+    nFit = [Vm.data[6], Vm.data[7], Vm.data[8]];
+    if (dot3(nFit, pick.n) < 0) nFit = neg33(nFit);
+    dFit = -dot3(nFit, [mx, my, mz]);
+  } else {
+    const os = inl.map(p => dot3(nFit, p.w3d)).sort((a, b) => a - b);
+    dFit = -os[os.length >> 1];
+  }
+  // EMA 时序平滑（锚点放下后独立于平面，平面只管放置质量 → 可持续精修不违钉住语义）
+  if (planeReady) {
+    if (dot3(nFit, planeN) < 0) { nFit = neg33(nFit); dFit = -dFit; }
+    planeN = norm3([0.7*planeN[0]+0.3*nFit[0], 0.7*planeN[1]+0.3*nFit[1], 0.7*planeN[2]+0.3*nFit[2]]);
+    planeD = 0.7*planeD + 0.3*dFit;
+  } else {
+    planeN = nFit; planeD = dFit; planeReady = true;
+  }
+  planeInl = inl.length;
+  for (const p of pts) p.isPlane = false;
+  for (const p of inl) p.isPlane = true;
+  // 平面范围：内点投影到平面 → 面内 2D 凸包（点连成面：稀疏点不需覆盖全平面，凸包即平面区域）
+  if (inl.length >= 5) {
+    let cx0=0, cy0=0, cz0=0;
+    for (const p of inl) { cx0+=p.w3d[0]; cy0+=p.w3d[1]; cz0+=p.w3d[2]; }
+    const c = [cx0/inl.length, cy0/inl.length, cz0/inl.length];
+    let u = cross3(planeN, [0, 1, 0]);
+    if (Math.hypot(u[0], u[1], u[2]) < 0.1) u = cross3(planeN, [1, 0, 0]);
+    u = norm3(u); const v = cross3(planeN, u);
+    const pts2 = [];
+    for (const p of inl) {
+      const on = sub3(p.w3d, c);
+      pts2.push([dot3(on, u), dot3(on, v)]);
+    }
+    pts2.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const hull = convexHull2(pts2);                           // Andrew 单调链
+    planeHull = hull.map(([a, b]) => [
+      c[0] + a*u[0] + b*v[0], c[1] + a*u[1] + b*v[1], c[2] + a*u[2] + b*v[2]
+    ]);
+  }
+}
+function convexHull2(P) {
+  if (P.length < 3) return P;
+  const cross = (o, a, b) => (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0]);
+  const lower = [];
+  for (const p of P) { while (lower.length >= 2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop(); lower.push(p); }
+  const upper = [];
+  for (let i = P.length - 1; i >= 0; i--) { const p = P[i]; while (upper.length >= 2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop(); upper.push(p); }
+  lower.pop(); upper.pop();
+  return lower.concat(upper);
 }
 
 // ============ D3：点按放置（射线 × 冻结平面） ============
@@ -418,7 +555,7 @@ function placeAnchorAt(px, py, R, T, n, d) {
   return [T[0] + t*dirW[0], T[1] + t*dirW[1], T[2] + t*dirW[2]];
 }
 overlay.addEventListener('pointerdown', (e) => {
-  if (!planeFrozen) { setMsg('平面未就绪：继续缓慢移动扫描，待"平面内点"冻绿后再点按。', true); return; }
+  if (!planeReady) { setMsg('平面未就绪：继续缓慢移动扫描，待"平面内点"变绿后再点按。', true); return; }
   const r = overlay.getBoundingClientRect();
   const px = (e.clientX - r.left) / r.width * procW, py = (e.clientY - r.top) / r.height * procH;
   const w = placeAnchorAt(px, py, poseR, poseT, planeN, planeD);
@@ -504,7 +641,7 @@ function tryRecover() {
   poseR = Rwn; poseT = Tn;
   pts = pairs.map(q => ({
     x: q.cx2, y: q.cy2, px: q.cx2, py: q.cy2, kx: q.cx2, ky: q.cy2, kSet: true,
-    age: 2, trail: [[q.cx2, q.cy2]], inlier: true, w3d: q.w3d ? [...q.w3d] : null, isPlane: false
+    age: 2, trail: [[q.cx2, q.cy2]], inlier: true, w3d: q.w3d ? [...q.w3d] : null, n3: null, isPlane: false
   }));
   path.push([poseT[0], poseT[2]]);
   recoveries++;
@@ -649,7 +786,7 @@ function loop(t) {
             path.push([poseT[0], poseT[2]]);
             if (path.length > 600) path.shift();
             snapshotKF();
-            if (!planeFrozen) tryFreezePlane();
+            updatePlane();                       // 平面持续精修（重力投票主路径 + 法向RANSAC回退 + 凸包范围）
           } else {
             rejects++;
             tDir = null;
@@ -719,8 +856,19 @@ function loop(t) {
     octx.fillStyle = col;
     octx.beginPath(); octx.arc(p.x, p.y, 2.2, 0, 6.2832); octx.fill();
   }
-  // 锚点：平面法向为轴的线框立方体（随位姿逐帧投影=钉住的直接目视判据）
-  if (planeFrozen) {
+  // 平面凸包（点连成面：青色半透明区域）+ 锚点（法向为轴的线框立方体，逐帧投影=钉住目视判据）
+  if (planeReady) {
+    if (planeHull && planeHull.length >= 3) {
+      const hp = planeHull.map(X => projectW(poseR, poseT, X));
+      if (hp.every(Boolean)) {
+        octx.beginPath();
+        octx.moveTo(hp[0][0], hp[0][1]);
+        for (let i = 1; i < hp.length; i++) octx.lineTo(hp[i][0], hp[i][1]);
+        octx.closePath();
+        octx.fillStyle = 'rgba(77,216,255,.12)'; octx.fill();
+        octx.strokeStyle = 'rgba(77,216,255,.6)'; octx.lineWidth = 1.5; octx.stroke();
+      }
+    }
     for (const a of anchors) {
       const dist = Math.hypot(a.w[0]-poseT[0], a.w[1]-poseT[1], a.w[2]-poseT[2]);
       const L = Math.max(0.02, dist * 0.12);
@@ -785,8 +933,8 @@ function loop(t) {
   hMs.textContent = ms.toFixed(1);
   hPts.textContent = pts.length;
   hCloud.textContent = cloudN;
-  hPlane.textContent = planeFrozen ? planeInl : '…';
-  hPlane.className = 'v ' + (planeFrozen ? 'good' : 'warn');
+  hPlane.textContent = planeReady ? planeInl : '…';
+  hPlane.className = 'v ' + (planeReady ? 'good' : 'warn');
   hAnch.textContent = anchors.length;
   hRec.textContent = recoveries;
   hRec.className = 'v ' + (recoveries > 0 ? 'good' : '');
@@ -794,7 +942,7 @@ function loop(t) {
   pState.className = state === 'TRACK' && !dark ? 'stTrack' : state === 'IMU' ? 'stImu' : 'stLost';
   pS.textContent = lastS !== null ? lastS.toFixed(2) : '–';
   pDark.textContent = darkCnt;
-  if (planeFrozen && gravCam) {
+  if (planeReady && gravCam) {
     const nCam = mv33(tr33(poseR), planeN);   // 世界法向 → 相机系
     pGrav.textContent = (Math.acos(Math.min(1, Math.abs(dot3(nCam, gravCam)))) * 180 / Math.PI).toFixed(0);
   } else pGrav.textContent = '–';
@@ -808,7 +956,7 @@ function loop(t) {
 
   // ---- 日志 ----
   if (window.__log.length < 3600) {
-    window.__log.push({ t: +t.toFixed(1), state, dark, s: lastS, pos: [...poseT], cloud: cloudN, plane: planeFrozen ? planeInl : 0, anch: anchors.length, rec: recoveries, inl: inliers, pts: pts.length, ms: +ms.toFixed(1) });
+    window.__log.push({ t: +t.toFixed(1), state, dark, s: lastS, pos: [...poseT], cloud: cloudN, plane: planeReady ? planeInl : 0, anch: anchors.length, rec: recoveries, inl: inliers, pts: pts.length, ms: +ms.toFixed(1) });
   }
 }
 
@@ -827,13 +975,41 @@ function setMsg(text, err) { msg.innerHTML = text; msg.className = err ? 'err' :
 $('btnCam').onclick = async () => {
   setMsg('请求摄像头权限…');
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } }, audio: false
-    });
-    video.srcObject = stream; await video.play();
-    setMsg('运行中。先缓慢横移扫描（点云/平面增长），平面冻绿后点按画面放方块。');
+    await openCam(-1);
+    setMsg('运行中。先缓慢横移扫描（点云/平面增长），平面区域变绿后点按画面放方块。');
     startLoop();
   } catch (e) { setMsg('摄像头失败：' + e.name, true); }
+};
+// 多摄像头探针：枚举 videoinput（部分机型把超广角/长焦暴露为独立设备），点击轮切
+let camDevs = [], camIdx = -1;
+async function listCams() {
+  try {
+    const ds = await navigator.mediaDevices.enumerateDevices();
+    camDevs = ds.filter(d => d.kind === 'videoinput');
+    $('btnLens').textContent = '镜头×' + Math.max(1, camDevs.length);
+    if (camDevs.length > 1) $('btnLens').style.borderColor = '#8052ff';
+    window.__cams = camDevs.map(d => d.label || '(无标签)');
+  } catch (e) {}
+}
+async function openCam(idx) {
+  const cons = { video: { width: { ideal: 640 }, height: { ideal: 480 } }, audio: false };
+  if (idx >= 0 && camDevs[idx]) cons.video.deviceId = { exact: camDevs[idx].deviceId };
+  else cons.video.facingMode = { ideal: 'environment' };
+  const stream = await navigator.mediaDevices.getUserMedia(cons);
+  if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
+  video.srcObject = stream; await video.play();
+  listCams();
+}
+$('btnLens').onclick = async () => {
+  if (!camDevs.length) { await listCams(); }
+  if (camDevs.length < 2) { setMsg('只枚举到 1 个摄像头（浏览器未暴露超广角/长焦为独立设备）。', true); return; }
+  camIdx = (camIdx + 1) % camDevs.length;
+  try {
+    const wasRunning = running; running = false;
+    await openCam(camIdx);
+    setMsg('已切换：' + (camDevs[camIdx].label || '镜头 ' + camIdx));
+    if (wasRunning) { resetAll(); startLoop(); }
+  } catch (e) { setMsg('切换失败：' + e.name, true); }
 };
 $('btnFile').onclick = () => $('fileIn').click();
 $('fileIn').onchange = (e) => {
@@ -890,15 +1066,43 @@ window.__selftest = function () {
     const sErr = Math.abs(s - sTrue) / sTrue;
     out.push(`T1 位姿+尺度: R误差=${Rerr.toFixed(2)}°(<2) t方向cos=${tcos.toFixed(3)}(>0.99) s=${s.toFixed(3)} vs ${sTrue.toFixed(3)} 误差=${(sErr*100).toFixed(0)}%(<15%) → ${Rerr < 2 && tcos > 0.99 && sErr < 0.15 ? 'PASS' : 'FAIL'}`);
   }
-  // T2：平面 RANSAC（60 平面点 + 20 离群）
-  poseT = [0, 0, 0];
-  const fit = fitPlaneCloud(planePts.concat(freePts));
-  if (!fit) out.push('T2 FAIL: 平面未拟合出');
-  else {
-    const nz = Math.abs(fit.n[2]);
-    const dd = Math.abs(fit.d);
-    out.push(`T2 平面RANSAC: |n·z|=${nz.toFixed(3)}(>0.98) |d|=${dd.toFixed(2)}(≈5) 内点=${fit.count} → ${nz > 0.98 && Math.abs(dd - 5) < 0.15 ? 'PASS' : 'FAIL'}`);
-  }
+  // T2：重力投票——稀疏地面（8 点 y=2 + 40 全高散布离群，注入重力 [0,-1,0]）
+  poseT = [0, 0, 0]; poseR = I3();
+  gravCam = [0, -1, 0];
+  const mkFloor = () => { const a = []; for (let i = 0; i < 8; i++) a.push({ w3d: [rnd(-2, 2), 2 + rnd(-0.03, 0.03), rnd(2, 6)], n3: null, isPlane: false }); return a; };
+  pts = mkFloor();
+  for (let i = 0; i < 40; i++) pts.push({ w3d: [rnd(-2, 2), rnd(-1, 4), rnd(2, 6)], n3: null, isPlane: false });
+  cloudN = pts.length; planeReady = false; planeN = null; planeHull = null;
+  updatePlane();
+  const ok2 = planeReady && Math.abs(planeN[1]) > 0.95 && Math.abs(planeD - 2) < 0.15;
+  out.push(`T2 重力投票稀疏地面: 就绪=${planeReady} n=[${planeN ? planeN.map(v=>v.toFixed(2)).join(',') : 'null'}] d=${planeD.toFixed(2)}(≈2) 内点=${planeInl} 凸包顶点=${planeHull ? planeHull.length : 0} → ${ok2 ? 'PASS' : 'FAIL'}`);
+  // T2b：近票平局取最低层——高层带 10 点 y≈2（10 < 8×1.5），地面 8 点 y=3（相机系 y 向下，y 大=低）→ 应选地面 d≈3
+  pts = [];
+  for (let i = 0; i < 8; i++) pts.push({ w3d: [rnd(-2, 2), 3 + rnd(-0.03, 0.03), rnd(2, 6)], n3: null, isPlane: false });
+  for (let i = 0; i < 10; i++) pts.push({ w3d: [rnd(-2, 2), 2 + rnd(-0.05, 0.05), rnd(2, 6)], n3: null, isPlane: false });
+  for (let i = 0; i < 15; i++) pts.push({ w3d: [rnd(-2, 2), rnd(-1, 1.5), rnd(2, 6)], n3: null, isPlane: false });
+  cloudN = pts.length; planeReady = false; planeN = null; planeD = 0; planeHull = null;
+  updatePlane();
+  const ok2b = planeReady && Math.abs(planeD - 3) < 0.15;
+  out.push(`T2b 近票平局取最低层: 就绪=${planeReady} d=${planeD.toFixed(2)}(≈3) → ${ok2b ? 'PASS' : 'FAIL'}`);
+  // T2c：明显优势接管——高层带 16 点 y≈2（16 ≥ 8×1.5）→ 应选高层 d≈2
+  pts = [];
+  for (let i = 0; i < 8; i++) pts.push({ w3d: [rnd(-2, 2), 3 + rnd(-0.03, 0.03), rnd(2, 6)], n3: null, isPlane: false });
+  for (let i = 0; i < 16; i++) pts.push({ w3d: [rnd(-2, 2), 2 + rnd(-0.05, 0.05), rnd(2, 6)], n3: null, isPlane: false });
+  for (let i = 0; i < 15; i++) pts.push({ w3d: [rnd(-2, 2), rnd(-1, 1.5), rnd(2, 6)], n3: null, isPlane: false });
+  cloudN = pts.length; planeReady = false; planeN = null; planeD = 0; planeHull = null;
+  updatePlane();
+  const ok2c = planeReady && Math.abs(planeD - 2) < 0.15;
+  out.push(`T2c 明显优势高层接管: 就绪=${planeReady} d=${planeD.toFixed(2)}(≈2) → ${ok2c ? 'PASS' : 'FAIL'}`);
+  // T4：双平面分割——地面 y=2（60 点）+ 墙 x=3（40 点），法向+重力应选地面
+  pts = [];
+  for (let i = 0; i < 60; i++) pts.push({ w3d: [rnd(-2, 2), 2 + rnd(-0.02, 0.02), rnd(2, 6)], n3: null, isPlane: false });
+  for (let i = 0; i < 40; i++) pts.push({ w3d: [3 + rnd(-0.02, 0.02), rnd(0, 3), rnd(2, 6)], n3: null, isPlane: false });
+  cloudN = pts.length; planeReady = false; planeN = null; planeHull = null;
+  updatePlane();
+  const ok4 = planeReady && Math.abs(planeN[1]) > 0.9;
+  out.push(`T4 双平面分割: 选中法向=[${planeN ? planeN.map(v=>v.toFixed(2)).join(',') : 'null'}]（应≈[0,±1,0] 地面）内点=${planeInl} → ${ok4 ? 'PASS' : 'FAIL'}`);
+  gravCam = null; resetAll();
   // T3：射线×平面（光轴正射 z=5 平面）
   const n3 = [0, 0, -1], d3 = 5;   // 法向朝相机
   const w = placeAnchorAt(160, 120, I3(), [0, 0, 0], n3, d3);

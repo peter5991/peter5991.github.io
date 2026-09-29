@@ -53,7 +53,7 @@ footer a{border-bottom:1px solid #333}
 
   <a class="milestone" href="d3-anchor.html">
     <div class="row"><span class="name">D3 · 平面锚定 + 丢踪保持</span><span class="badge doing">待真机验收</span></div>
-    <p class="desc">尺度传播稀疏点云 → RANSAC 平面拟合（冻结=钉住）→ 点按放置方块；丢踪时 KF 快照 LK/最近邻双路恢复，IMU 外推锚点不消失；暗帧门控 + 陀螺零偏静止估计。</p>
+    <p class="desc">尺度传播稀疏点云 → 逐点法向 + 重力 1-DOF 投票/法向 RANSAC 双路平面分割（凸包显示平面区域）→ 点按放置方块；丢踪时 KF 快照 LK/最近邻双路恢复，IMU 外推锚点不消失；暗帧门控 + 陀螺零偏静止估计 + 多镜头切换探针。</p>
     <p class="accept">走开 2~3m 回看偏移可接受（参照：Quest 3 困难环境 APE&gt;10cm）；遮挡 2s 恢复或优雅提示</p>
   </a>
 
