@@ -1186,7 +1186,18 @@ function buildResBar() {
   }
   markResBar();
 }
-async function openCam(idx) { camIdx = idx; await reopenCam(); }
+let firstOpenDone = false;
+async function openCam(idx) {
+  camIdx = idx; await reopenCam();
+  // Reno14 实测：冷启动首开落在主摄裁切模式（视场 41°），相同约束重开一次才落超广角——浏览器冷热状态的模式选择差异
+  if (!firstOpenDone) {
+    firstOpenDone = true;
+    setMsg('首开完成，自动重开一次切换广角…');
+    await waitFrames(1500);
+    await reopenCam();
+    fSamples = []; lastCalT = 0;
+  }
+}
 // 开流/重开流：resizeMode:'none' = 禁止浏览器裁切/缩放传感器输出；分辨率只作打开约束（不热切换）
 async function reopenCam() {
   const cons = { video: { resizeMode: 'none' }, audio: false };
@@ -1212,6 +1223,7 @@ async function reopenCam() {
     curZoom = camTrack.getSettings ? (camTrack.getSettings().zoom ?? 1) : 1;
     window.__zoom = zoomCaps ? { min: zoomCaps.min, max: zoomCaps.max, now: curZoom } : null;
     window.__track = { caps: { zoom: zoomCaps, resizeMode: caps.resizeMode || null }, settings: camTrack.getSettings ? camTrack.getSettings() : {} };
+    (window.__opens = window.__opens || []).push({ w: window.__track.settings.width, h: window.__track.settings.height, fps: window.__track.settings.frameRate, zoom: curZoom });  // 首开/重开参数对比诊断（__dump 可见）
     showTrackInfo();
     buildZoomBar();
     buildResBar();
