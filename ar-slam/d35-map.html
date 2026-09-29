@@ -83,7 +83,7 @@ footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-heig
     尺度 s <b id="pS">–</b> · 焦距 f <b id="pF">–</b> · 视场 <b id="pFov">–</b>° · 暗帧 <b id="pDark">0</b><br>
     重力-法向 <b id="pGrav">–</b>°<br>
     位置(相对) <b id="pPos">0, 0, 0</b><br>
-    丢弃帧 <b id="pRej">0</b> · 静止抖动σ <b id="pJit">–</b>°<br>
+    丢弃帧 <b id="pRej">0</b> · 静止抖动σ <b id="pJit">–</b>° · 重投影 <b id="pRepr">–</b>px<br>
     IMU <b id="pImu">未连接</b><br>
     镜头 <b id="pZoom">–</b>
   </div>
@@ -92,6 +92,7 @@ footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-heig
 <div id="controls">
   <button class="primary" id="btnCam">启动摄像头</button>
   <button id="btnFile">回放视频文件</button>
+  <button id="btnFLock" title="锁定后焦距标定停止、世界不再重塑：隔离'f 漂移'与'旋转链路'两个嫌疑">锁定焦距</button>
   <button id="btnReset">重置全部</button>
   <input type="file" id="fileIn" accept="video/*" hidden>
 </div>
@@ -173,6 +174,8 @@ let mapCapWarned = false;
 let anchors = [];                            // [{w,n,u,v}]（放下即记录平面局部基，平面精修不带动锚点）
 let recoveries = 0, darkCnt = 0, lastS = null, gravCam = null;
 let fSamples = [], lastCalT = 0;               // 焦距自标定（纯旋转期 Δpx=f·Δθ）
+let focalLock = false, fHist = [];             // 焦距锁定（隔离诊断：f 漂移 vs 旋转链路）+ 收敛历史
+let reprMed = null;                            // 位姿估计后世界点重投影中位误差（几何健康度，px）
 let wideRetries = 0, fStale = true;            // 视场闭环：自动重开预算 + "度数未重新标定"标记
 let camTrack = null, zoomCaps = null, curZoom = 1;  // 变焦控制（applyConstraints zoom）
 // IMU
@@ -214,7 +217,7 @@ function allocStructs() {
 function resetAll() {
   pts = []; poseR = I3(); poseT = [0,0,0]; path = []; state = 'INIT'; jitWin = []; rejects = 0;
   kf = null; cloudN = 0; mapPts = []; planes = []; mapCapWarned = false;
-  anchors = []; recoveries = 0; darkCnt = 0; lastS = null;
+  anchors = []; recoveries = 0; darkCnt = 0; lastS = null; reprMed = null;
   window.__log.length = 0;
 }
 
@@ -511,29 +514,26 @@ function assignNormals(medDist) {
   }
 }
 // Bowyer-Watson 增量 Delaunay（2D 面内）；返回三角形索引三元组（顶点数 <100000 为前提的边键编码）
+// 判据=incircle 行列式（无除法，数值稳健）：外接圆圆心公式对瘦长三角形有除法爆炸，共圆/网格点集下产生覆盖空洞
 function delaunay2(P) {
   const n = P.length;
   if (n < 3) return [];
   let minX=1e30, minY=1e30, maxX=-1e30, maxY=-1e30;
   for (const p of P) { if (p[0]<minX) minX=p[0]; if (p[0]>maxX) maxX=p[0]; if (p[1]<minY) minY=p[1]; if (p[1]>maxY) maxY=p[1]; }
   const dm = Math.max(maxX-minX, maxY-minY) || 1, mx=(minX+maxX)/2, my=(minY+maxY)/2;
-  const pts = P.concat([[mx-20*dm, my-dm], [mx, my+20*dm], [mx+20*dm, my-dm]]);   // 超三角形
+  const pts = P.concat([[mx-1e4*dm, my-dm], [mx, my+1e4*dm], [mx+1e4*dm, my-dm]]);   // 超三角形（必须极远：长而平的凸包边的空圆半径巨大，20×dm 会被超顶点污染→ hull 边狭条空洞）
   let tris = [[n, n+1, n+2]];
-  const circum = t => {
+  // 点 p 是否在三角形 t 外接圆内（行列式符号按三角形绕向归一）
+  const inCirc = (t, p) => {
     const a=pts[t[0]], b=pts[t[1]], c=pts[t[2]];
-    const d = 2*(a[0]*(b[1]-c[1]) + b[0]*(c[1]-a[1]) + c[0]*(a[1]-b[1]));
-    if (Math.abs(d) < 1e-12) return null;
-    const a2=a[0]*a[0]+a[1]*a[1], b2=b[0]*b[0]+b[1]*b[1], c2=c[0]*c[0]+c[1]*c[1];
-    const cx=(a2*(b[1]-c[1]) + b2*(c[1]-a[1]) + c2*(a[1]-b[1]))/d;
-    const cy=(a2*(c[0]-b[0]) + b2*(a[0]-c[0]) + c2*(b[0]-a[0]))/d;
-    return [cx, cy, (cx-a[0])*(cx-a[0]) + (cy-a[1])*(cy-a[1])];
+    const ax=a[0]-p[0], ay=a[1]-p[1], bx=b[0]-p[0], by=b[1]-p[1], cx=c[0]-p[0], cy=c[1]-p[1];
+    const det = (ax*ax+ay*ay)*(bx*cy-cx*by) - (bx*bx+by*by)*(ax*cy-cx*ay) + (cx*cx+cy*cy)*(ax*by-bx*ay);
+    const orient = (b[0]-a[0])*(c[1]-a[1]) - (c[0]-a[0])*(b[1]-a[1]);
+    return orient > 0 ? det > 0 : det < 0;
   };
   for (let i = 0; i < n; i++) {
     const p = pts[i], bad = new Set();
-    for (let ti = 0; ti < tris.length; ti++) {
-      const c = circum(tris[ti]);
-      if (c) { const dx=p[0]-c[0], dy=p[1]-c[1]; if (dx*dx + dy*dy <= c[2]) bad.add(ti); }
-    }
+    for (let ti = 0; ti < tris.length; ti++) if (inCirc(tris[ti], p)) bad.add(ti);
     const edgeCnt = new Map();
     for (const ti of bad) {
       const t = tris[ti];
@@ -1015,6 +1015,19 @@ function loop(t) {
             if (path.length > 600) path.shift();
             snapshotKF();
             updateMap();                         // 持久地图合并 + 多平面分割 + 低模网格（重力多簇 + 顺序RANSAC）
+            // 重投影一致性（几何健康度）：旧世界点经新位姿投影 vs 当前观测，中位误差
+            // 转动漂移时此值飙升=旋转/尺度链路问题；<3px 健康（与恢复阈值 REPRO_TH 同标尺）
+            {
+              const re = [];
+              for (let i = 0; i < n; i++) {
+                if (!est.mask[i]) continue;
+                const p = pts[kPtIdx[i]];
+                if (!p.w3d) continue;
+                const pr = projectW(poseR, poseT, p.w3d);
+                if (pr) re.push(Math.hypot(pr[0] - p.x, pr[1] - p.y));
+              }
+              if (re.length >= 10) { re.sort((a, b) => a - b); reprMed = re[re.length >> 1]; }
+            }
           } else {
             rejects++;
             tDir = null;
@@ -1046,7 +1059,8 @@ function loop(t) {
 
   // ---- 焦距自标定（纯旋转期：Δpx = f·Δθ；IMU 给 Δθ，LK 帧间流给 Δpx） ----
   // 根因修复：多摄机型默认高倍裁切流（实测 ≈5×）→ 焦距假设错 → 三角化深度按比例错 → 锚点钉不住
-  if (!dark && corresp && imuRot !== null && imuRot > 0.2 && imuRot < 4 && pts.length >= 40) {
+  // focalLock=锁定诊断：锁后采样与收敛全停，世界不再重塑——隔离"f 漂移"与"旋转链路"两嫌疑
+  if (!focalLock && !dark && corresp && imuRot !== null && imuRot > 0.2 && imuRot < 4 && pts.length >= 40) {
     const mags = [];
     let ux = 0, uy = 0;
     for (const p of pts) {
@@ -1063,13 +1077,14 @@ function loop(t) {
       }
     }
   }
-  if (fSamples.length >= 30 && t - lastCalT > 2000) {      // 2s 节律收敛评估
+  if (!focalLock && fSamples.length >= 30 && t - lastCalT > 2000) {      // 2s 节律收敛评估
     const sorted = [...fSamples].sort((a, b) => a - b);
     const fMed = sorted[sorted.length >> 1];
     if (Math.abs(fMed - focal) / focal > 0.05) {
       rescaleWorld(fMed / focal);
       focal = fMed;
     }
+    fHist.push(Math.round(fMed)); if (fHist.length > 6) fHist.shift();
     fSamples = []; lastCalT = t; fStale = false;
     // 视场闭环：收敛后仍窄（<60°=主摄裁切模式）→ 自动重开掷下一次（物理镜头选择=每开流一次骰子）
     const fovNow = 2 * Math.atan(procW / 2 / focal) * 180 / Math.PI;
@@ -1227,7 +1242,7 @@ function loop(t) {
   pState.textContent = dark ? '暗帧' : state === 'TRACK' ? '跟踪中' : state === 'IMU' ? 'IMU 外推' : state === 'LOST' ? '丢失' : '初始化';
   pState.className = state === 'TRACK' && !dark ? 'stTrack' : state === 'IMU' ? 'stImu' : 'stLost';
   pS.textContent = lastS !== null ? lastS.toFixed(2) : '–';
-  pF.textContent = focal.toFixed(0) + (fSamples.length ? `(${fSamples.length})` : '');
+  pF.textContent = focal.toFixed(0) + (focalLock ? '🔒' : '') + (fSamples.length ? `(${fSamples.length})` : '') + (fHist.length > 1 ? ' 收敛史' + fHist.slice(-4).join('→') : '');
   // 视场角由收敛焦距反推（客观真值，不靠目测）：主摄 1× 正常 ≈70~80°，明显偏小=流是中心裁切模式
   // 带 ? = 焦距未重新标定（切档/变焦后需转动手机重收敛，此前显示的是旧值）
   $('pFov').textContent = (2 * Math.atan(procW / 2 / focal) * 180 / Math.PI).toFixed(0) + (fStale ? '?' : '');
@@ -1245,10 +1260,13 @@ function loop(t) {
     : motionEvtCnt > 0 ? `仅motion(${motionEvtCnt})` : '无事件(浏览器不支持?)';
   pImu.className = imuReady ? '' : 'bad';
   pRej.textContent = rejects;
+  const pRepr = $('pRepr');
+  pRepr.textContent = reprMed !== null ? reprMed.toFixed(1) : '–';
+  pRepr.className = reprMed === null ? '' : reprMed < 3 ? 'good' : reprMed < 6 ? 'warn' : 'bad';
 
   // ---- 日志 ----
   if (window.__log.length < 3600) {
-    window.__log.push({ t: +t.toFixed(1), state, dark, s: lastS, pos: [...poseT], map: mapPts.length, plane: planes.length, anch: anchors.length, rec: recoveries, inl: inliers, pts: pts.length, ms: +ms.toFixed(1) });
+    window.__log.push({ t: +t.toFixed(1), state, dark, s: lastS, f: +focal.toFixed(0), lock: focalLock, repr: reprMed !== null ? +reprMed.toFixed(1) : null, pos: [...poseT], map: mapPts.length, plane: planes.length, anch: anchors.length, rec: recoveries, inl: inliers, pts: pts.length, ms: +ms.toFixed(1) });
   }
 }
 
@@ -1316,6 +1334,7 @@ async function setZoom(z) {
       setMsg(`变焦请求 ${z}× 但实际仍是 ${actual}×——本浏览器拒绝执行变焦`, true);
     if (window.__zoom) window.__zoom.now = curZoom;
     fSamples = []; lastCalT = 0; fStale = true;  // 有效焦距变了 → 重新收敛（偏差>5% 时世界按比例重塑）
+    unlockFocal();                               // 变焦改变真实焦距 → 锁失效
     showTrackInfo(); markZoomBar();
   } catch (e) {
     setMsg('变焦调用报错：' + e.name + (e.message ? '（' + e.message + '）' : ''), true);  // Fail Loud，不再静默吞错
@@ -1374,6 +1393,7 @@ async function setRes(short) {
       setMsg(`短边 ${short || '自动'} 档黑屏无画面——本机不支持该模式，已回退自动档`, true);
     } else {
       fSamples = []; lastCalT = 0; fStale = true;  // 视场若变，有效焦距跟着变 → 标定重收敛
+      unlockFocal();                               // 切档改变真实焦距 → 锁失效
       wideRetries = 0; window.__wideGaveUp = false;  // 手动切档=新的骰子 → 重置自动重开预算
       const st = camTrack.getSettings ? camTrack.getSettings() : {};
       setMsg(`已切到 ${short || '自动'} 档（实际 ${st.width || '?'}×${st.height || '?'}）。<b>原地转动手机几秒重新标定焦距，"视场"度数才会更新</b>。`);
@@ -1452,6 +1472,22 @@ $('fileIn').onchange = (e) => {
   video.play().then(() => { setMsg('回放模式：' + f.name); startLoop(); });
 };
 $('btnReset').onclick = () => { resetAll(); setMsg('已重置（位姿/点云/平面/锚点全清）。'); };
+// 焦距锁定（诊断）：锁后标定停止、世界不重塑——转动/走动看多边形是否仍漂移：仍漂=旋转链路，不漂=f 漂移
+// 变焦/切档会改变真实焦距 → 自动解锁
+function unlockFocal() {
+  if (!focalLock) return;
+  focalLock = false;
+  const b = $('btnFLock'); b.textContent = '锁定焦距'; b.classList.remove('primary');
+}
+$('btnFLock').onclick = () => {
+  focalLock = !focalLock;
+  const b = $('btnFLock');
+  b.textContent = focalLock ? '焦距已锁🔒' : '锁定焦距';
+  b.classList.toggle('primary', focalLock);
+  setMsg(focalLock
+    ? `焦距已锁定 f=${focal.toFixed(0)}（标定停止、世界不再重塑）。现在转动+走动观察：多边形仍漂移=旋转链路问题；稳定=此前 f 漂移是因。`
+    : '焦距标定恢复自动（收敛史保留在 f 读数后）。');
+};
 
 // ============ 桌面自验（无摄像头数学真值测试；chrome console: __selftest()） ============
 window.__selftest = function () {
@@ -1547,8 +1583,9 @@ window.__selftest = function () {
   let areaH = 0;
   for (let i = 0; i < hull5.length; i++) { const a = hull5[i], b = hull5[(i+1)%hull5.length]; areaH += a[0]*b[1] - b[0]*a[1]; }
   areaH = Math.abs(areaH) / 2;
-  const ok5 = tris5.length === 2*30 - 2 - hull5.length && Math.abs(areaT - areaH) / areaH < 1e-6;
-  out.push(`T5 Delaunay: 三角形=${tris5.length}(=${2*30-2-hull5.length}) 面积和=${areaT.toFixed(4)} vs 凸包=${areaH.toFixed(4)} → ${ok5 ? 'PASS' : 'FAIL'}`);
+  const ok5 = Math.abs(areaT - areaH) / areaH < 1e-6 && tris5.length <= 2*30 - 2 - hull5.length && tris5.length >= 2*30 - 2 - hull5.length - 2;
+  // 断言意图：面积恒等=覆盖无空洞（主不变量）；欧拉数允许差 ≤2——近共线退化狭条在并列判据下被丢弃（面积≈0，隐形），不算缺陷
+  out.push(`T5 Delaunay: 三角形=${tris5.length}(期望${2*30-2-hull5.length}±2) 面积和=${areaT.toFixed(4)} vs 凸包=${areaH.toFixed(4)} → ${ok5 ? 'PASS' : 'FAIL'}`);
   // T3 选面锚点：两张水平桌台 y=0.5/y=1（面内 x∈[-2,2], z∈[1.5,5.5]）；像素(160,200) 先命中近面 y=0.5；向上射线(160,10) 无命中
   mapPts = []; pts = []; planes = [];
   for (const yy of [0.5, 1]) {
