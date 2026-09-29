@@ -753,11 +753,15 @@ if (window.DeviceMotionEvent) {
 }
 
 // ============ 主循环 ============
-let lostFrameCnt = 0;
+let lostFrameCnt = 0, lastVidT = -1;
 function loop(t) {
   if (!running) return;
   requestAnimationFrame(loop);
   if (video.readyState < 2 || !video.videoWidth) return;
+  // 只处理新视频帧：高刷屏（Reno14=120Hz）rAF 远快于流帧率（超广角=30fps），重复帧光流≈0 但 IMU
+  // 在转 → 焦距标定 f 虚高数倍（"广角画面度数却很低"的根因）、静止判定误触发污染陀螺零偏
+  if (video.currentTime === lastVidT) return;
+  lastVidT = video.currentTime;
   const t0 = performance.now();
 
   procCtx.drawImage(video, 0, 0, procW, procH);
