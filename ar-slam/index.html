@@ -51,11 +51,11 @@ footer a{border-bottom:1px solid #333}
     <p class="accept">桌面平移 1m 往返位姿连续无跳变；静止抖动量级实测记录</p>
   </a>
 
-  <div class="milestone">
-    <div class="row"><span class="name">D3 · 平面锚定 + 丢踪保持</span><span class="badge todo">待建设</span></div>
-    <p class="desc">稀疏点云三角化 → RANSAC 平面拟合 → 点按放置锚点；追踪丢失时锚定物钉住不消失（IMU 外推），恢复后重锚。</p>
+  <a class="milestone" href="d3-anchor.html">
+    <div class="row"><span class="name">D3 · 平面锚定 + 丢踪保持</span><span class="badge doing">待真机验收</span></div>
+    <p class="desc">尺度传播稀疏点云 → RANSAC 平面拟合（冻结=钉住）→ 点按放置方块；丢踪时 KF 快照 LK/最近邻双路恢复，IMU 外推锚点不消失；暗帧门控 + 陀螺零偏静止估计。</p>
     <p class="accept">走开 2~3m 回看偏移可接受（参照：Quest 3 困难环境 APE&gt;10cm）；遮挡 2s 恢复或优雅提示</p>
-  </div>
+  </a>
 
   <div class="milestone">
     <div class="row"><span class="name">D4 · 沙盘集成 + 降级链</span><span class="badge todo">待建设</span></div>
