@@ -1140,23 +1140,30 @@ function buildZoomBar() {
 // ============ 视场档位（分辨率请求引导浏览器选原生 sensor 模式：低分辨率档在部分机型=中心裁切→视场窄；高档位=全视场合并读出） ============
 const RES_PRESETS = [0, 480, 960, 1440, 2448];   // 0=自动(不指定)；值=短边像素，按 4:3 请求（贴近相机 app 全传感器比例）
 let curRes = 0, resBusy = false;
+// 黑屏看门狗：轮询 currentTime 是否前进（轨道静音/假活时视频时间冻结）
+function waitFrames(timeoutMs) {
+  return new Promise((resolve) => {
+    const t0 = video.currentTime, tStart = Date.now();
+    const iv = setInterval(() => {
+      if (video.currentTime > t0 + 0.05) { clearInterval(iv); resolve(true); }
+      else if (Date.now() - tStart > timeoutMs) { clearInterval(iv); resolve(false); }
+    }, 200);
+  });
+}
 async function setRes(short) {
   if (!camTrack || resBusy) return;
   resBusy = true; curRes = short; markResBar();
   try {
-    const cons = short ? { width: { ideal: short * 4 / 3 }, height: { ideal: short }, resizeMode: 'none' } : { resizeMode: 'none' };
-    await camTrack.applyConstraints(cons);
-    const st = camTrack.getSettings ? camTrack.getSettings() : {};
-    if (short) {
-      const got = Math.min(st.width || 0, st.height || 0);
-      if (Math.abs(got - short) / short > 0.25) setMsg(`视场档位请求短边 ${short} 但实际 ${st.width}×${st.height}——浏览器选了最接近的原生模式`, true);
+    await reopenCam();                          // 分辨率走重开流（热切换在部分安卓浏览器黑屏）
+    if (!(await waitFrames(3000))) {
+      curRes = 0; markResBar();
+      await reopenCam();                        // 回退自动档
+      setMsg(`短边 ${short || '自动'} 档黑屏无画面——本机不支持该模式，已回退自动档`, true);
+    } else {
+      fSamples = []; lastCalT = 0;              // 视场若变，有效焦距跟着变 → 标定重收敛
+      const st = camTrack.getSettings ? camTrack.getSettings() : {};
+      setMsg(`已切到 ${short || '自动'} 档（实际 ${st.width || '?'}×${st.height || '?'}）。<b>原地转动手机几秒重新标定焦距，"视场"度数才会更新</b>。`);
     }
-    if (zoomCaps) {   // 分辨率切换可能重置变焦 → 拉回最小倍率拿最宽视场
-      try { await camTrack.applyConstraints({ advanced: [{ zoom: zoomCaps.min || 1 }] }); } catch (e) {}
-    }
-    curZoom = camTrack.getSettings ? (camTrack.getSettings().zoom ?? curZoom) : curZoom;
-    fSamples = []; lastCalT = 0;                    // 视场若变，有效焦距跟着变 → 标定重收敛
-    showTrackInfo(); markZoomBar();
   } catch (e) {
     setMsg('视场档位切换报错：' + e.name + (e.message ? '（' + e.message + '）' : ''), true);
   }
@@ -1179,15 +1186,23 @@ function buildResBar() {
   }
   markResBar();
 }
-async function openCam(idx) {
-  // resizeMode:'none' = 禁止浏览器裁切/缩放传感器输出（crop-and-scale 是 5× 放大根因嫌疑）；
-  // 不指定分辨率 → 浏览器给默认预览模式（通常是全视场 binning）
+async function openCam(idx) { camIdx = idx; await reopenCam(); }
+// 开流/重开流：resizeMode:'none' = 禁止浏览器裁切/缩放传感器输出；分辨率只作打开约束（不热切换）
+async function reopenCam() {
   const cons = { video: { resizeMode: 'none' }, audio: false };
-  if (idx >= 0 && camDevs[idx]) cons.video.deviceId = { exact: camDevs[idx].deviceId };
+  if (curRes) { cons.video.width = { ideal: curRes * 4 / 3 }; cons.video.height = { ideal: curRes }; }
+  if (camIdx >= 0 && camDevs[camIdx]) cons.video.deviceId = { exact: camDevs[camIdx].deviceId };
   else cons.video.facingMode = { ideal: 'environment' };
   const stream = await navigator.mediaDevices.getUserMedia(cons);
   if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
   video.srcObject = stream; await video.play();
+  // 档位宽高比变了（如落到 16:9 模式）→ 视觉状态作废，软重置
+  if (running) {
+    const newProcH = Math.round(PROC_W * video.videoHeight / video.videoWidth) & ~1;
+    if (Math.abs(newProcH - procH) > 4) {
+      procW = PROC_W; procH = newProcH; allocStructs(); resetAll();
+    }
+  }
   // 修正默认变焦：部分多摄机型（实测 OPPO）默认流是高倍裁切（≈5×）→ 拉回最小倍率
   try {
     camTrack = stream.getVideoTracks()[0];
