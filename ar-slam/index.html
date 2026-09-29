@@ -46,8 +46,8 @@ footer a{border-bottom:1px solid #333}
   </a>
 
   <a class="milestone" href="d2-pose.html">
-    <div class="row"><span class="name">D2 · 相对位姿 + IMU 松耦合</span><span class="badge doing">待真机实测</span></div>
-    <p class="desc">本质矩阵 + 8点法 + RANSAC 求帧间 6DoF 位姿；物理上限门控丢弃噪声帧；IMU 松耦合（异常帧交叉校验 + 丢踪外推）；俯视轨迹图。桌面合成视频自验：60fps、方向一致率 71%、异常旋转帧已压制。</p>
+    <div class="row"><span class="name">D2 · 相对位姿 + IMU 松耦合</span><span class="badge done">已通过 ✓</span></div>
+    <p class="desc">基线累积位姿（视差≥2px 才估计）+ 物理门控 + IMU 陀螺仪通路（OPPO 浏览器无 deviceorientation，rotationRate 积分）。Reno14 真机验收通过（2026-09-29）。</p>
     <p class="accept">桌面平移 1m 往返位姿连续无跳变；静止抖动量级实测记录</p>
   </a>
 
