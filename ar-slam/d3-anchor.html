@@ -15,7 +15,7 @@ h1{font-size:16px;font-weight:700}
 header a{font-size:12px;color:var(--ash)}
 #stage{position:relative;width:100%;background:#0a0a0a;overflow:hidden}
 #cam{display:block;width:100%;height:auto}
-#overlay{position:absolute;inset:0;width:100%;height:100%;touch-action:manipulation}
+#overlay{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
 #hud{display:flex;border-top:1px solid #1c1c1c;border-bottom:1px solid #1c1c1c;flex-wrap:wrap}
 #hud .cell{flex:1;min-width:14%;padding:8px 2px;text-align:center}
 #hud .v{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums}
@@ -32,6 +32,11 @@ button:active{border-color:var(--iris)}
 button.primary{background:var(--iris);border-color:var(--iris)}
 #msg{padding:0 16px 10px;font-size:12px;color:var(--ash);line-height:1.7}
 #msg.err{color:var(--red)}
+#zoomBar{display:flex;gap:8px;padding:0 16px 10px;align-items:center}
+#zoomBar[hidden]{display:none}
+#zoomBar button{flex:1;padding:8px 4px;font-size:12px}
+#zoomBar button.on{border-color:var(--verdant);color:var(--verdant)}
+#zoomHint{flex:1;font-size:12px;color:var(--ash);text-align:center}
 footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-height:1.6}
 /* 手机适配：数据面板纵向堆叠（轨迹图缩到上方小图，数据全宽），HUD 两行三列 */
 @media (max-width: 640px) {
@@ -85,6 +90,8 @@ footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-heig
   <button id="btnReset">重置全部</button>
   <input type="file" id="fileIn" accept="video/*" hidden>
 </div>
+
+<div id="zoomBar" hidden></div>
 
 <p id="msg">验收三步：①缓慢移动扫描环境，平面区域（青色凸包）出现后<b>点按画面</b>放置方块；②走开 2~3m 回看——方块应钉在原位；③手掌遮镜头 2s 拿开——方块不消失，恢复计数 +1。</p>
 <footer>jsfeat (MIT) · D2 位姿链 + 尺度传播稀疏点云 → 逐点法向(邻域PCA) + 重力 1-DOF 投票 / 法向一致 RANSAC 双路平面分割 + 凸包范围（Quest Scene Mesh 思路稀疏适配）→ 射线求交锚点 · 丢踪=KF 快照 LK/最近邻双路恢复（FB 校验）· 暗帧门控 · 陀螺零偏估计</footer>
@@ -150,6 +157,7 @@ let planeHull = null;                            // 平面范围凸包（世界�
 let anchors = [];                                // [{w:[x,y,z]}]
 let recoveries = 0, darkCnt = 0, lastS = null, gravCam = null;
 let fSamples = [], lastCalT = 0;               // 焦距自标定（纯旋转期 Δpx=f·Δθ）
+let camTrack = null, zoomCaps = null, curZoom = 1;  // 变焦控制（applyConstraints zoom）
 // IMU
 let imuQ = null, imuQPrev = null, imuReady = false, imuViaGyro = false;
 let imuEvtCnt = 0, imuNullCnt = 0, motionEvtCnt = 0;
@@ -565,7 +573,19 @@ function placeAnchorAt(px, py, R, T, n, d) {
   if (t <= 0) return null;
   return [T[0] + t*dirW[0], T[1] + t*dirW[1], T[2] + t*dirW[2]];
 }
+// 点按=放锚点；双指捏合=变焦。按下只记账，抬起才落锚——移动超阈值/第二指落下/捏合中均取消
+let tapX = 0, tapY = 0, tapCancel = false;
+let pinchD0 = 0, pinchZ0 = 1, pinchLive = false;
 overlay.addEventListener('pointerdown', (e) => {
+  if (!e.isPrimary) { tapCancel = true; return; }   // 第二指落下 → 本次手势是捏合不是点按
+  tapX = e.clientX; tapY = e.clientY; tapCancel = false;
+});
+overlay.addEventListener('pointermove', (e) => {
+  if (e.buttons && Math.hypot(e.clientX - tapX, e.clientY - tapY) > 12) tapCancel = true;
+});
+overlay.addEventListener('pointercancel', () => { tapCancel = true; });
+overlay.addEventListener('pointerup', (e) => {
+  if (!e.isPrimary || tapCancel || pinchLive) return;
   if (!planeReady) { setMsg('平面未就绪：继续缓慢移动扫描，待"平面内点"变绿后再点按。', true); return; }
   const r = overlay.getBoundingClientRect();
   const px = (e.clientX - r.left) / r.width * procW, py = (e.clientY - r.top) / r.height * procH;
@@ -573,6 +593,15 @@ overlay.addEventListener('pointerdown', (e) => {
   if (w) { anchors.push({ w }); setMsg('锚点已放置（共 ' + anchors.length + ' 个）。走开回看验证钉住。'); }
   else setMsg('该方向与平面无有效交点，换个位置点。', true);
 });
+// 捏合变焦（overlay touch-action:none，浏览器不会劫持为页面缩放；applyConstraints 内部已节流排队）
+function pinchDist(t) { return Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY); }
+overlay.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 2 && zoomCaps) { pinchLive = true; pinchD0 = pinchDist(e.touches); pinchZ0 = curZoom; }
+}, { passive: true });
+overlay.addEventListener('touchmove', (e) => {
+  if (pinchLive && e.touches.length === 2 && pinchD0 > 0) setZoom(pinchZ0 * pinchDist(e.touches) / pinchD0);
+}, { passive: true });
+overlay.addEventListener('touchend', (e) => { if (e.touches.length < 2) pinchLive = false; }, { passive: true });
 
 // ============ D3：丢踪恢复（KF 快照双路：LK + 最近邻） ============
 function tryRecover() {
@@ -1030,6 +1059,49 @@ async function listCams() {
     window.__cams = camDevs.map(d => d.label || '(无标签)');
   } catch (e) {}
 }
+// ============ 变焦控制（倍率按钮 + 捏合手势共用；变焦改变有效焦距 → 标定样本清零重收敛） ============
+function showTrackInfo() {
+  if (!camTrack) return;
+  const st = camTrack.getSettings ? camTrack.getSettings() : {};
+  $('pZoom').textContent = `${st.width || '?'}×${st.height || '?'} · ${st.resizeMode || '?'} · zoom ${st.zoom ?? '不支持'}` +
+    (zoomCaps ? `（可调 ${zoomCaps.min}~${zoomCaps.max}）` : '');
+}
+let zoomBusy = false, zoomPending = null;
+async function setZoom(z) {
+  if (!camTrack || !zoomCaps) return;
+  z = Math.min(zoomCaps.max, Math.max(zoomCaps.min, Math.round(z * 100) / 100));
+  if (zoomBusy) { zoomPending = z; return; }      // 捏合期间高频调用 → 只保留最新值排队
+  zoomBusy = true;
+  try {
+    await camTrack.applyConstraints({ advanced: [{ zoom: z }] });
+    curZoom = camTrack.getSettings ? (camTrack.getSettings().zoom ?? z) : z;
+    if (window.__zoom) window.__zoom.now = curZoom;
+    fSamples = []; lastCalT = 0;                   // 有效焦距变了 → 重新收敛（偏差>5% 时世界按比例重塑）
+    showTrackInfo(); markZoomBar();
+  } catch (e) {}
+  zoomBusy = false;
+  if (zoomPending !== null) { const p = zoomPending; zoomPending = null; setZoom(p); }
+}
+function markZoomBar() {
+  for (const b of $('zoomBar').querySelectorAll('button'))
+    b.classList.toggle('on', Math.abs(parseFloat(b.dataset.z) - curZoom) < 0.05);
+}
+function buildZoomBar() {
+  const bar = $('zoomBar'); bar.innerHTML = ''; bar.hidden = false;
+  if (!zoomCaps) {
+    bar.innerHTML = '<span id="zoomHint">本浏览器未暴露变焦调节（zoom 不支持）——视场仍过窄请换 Chrome 对比</span>';
+    return;
+  }
+  const presets = [...new Set([zoomCaps.min, 1, 2].filter(v => v >= zoomCaps.min - 1e-6 && v <= zoomCaps.max + 1e-6))].sort((a, b) => a - b);
+  for (const v of presets) {
+    const b = document.createElement('button');
+    b.textContent = (Math.round(v * 10) / 10) + '×';
+    b.dataset.z = v;
+    b.onclick = () => setZoom(v);
+    bar.appendChild(b);
+  }
+  markZoomBar();
+}
 async function openCam(idx) {
   // resizeMode:'none' = 禁止浏览器裁切/缩放传感器输出（crop-and-scale 是 5× 放大根因嫌疑）；
   // 不指定分辨率 → 浏览器给默认预览模式（通常是全视场 binning）
@@ -1041,16 +1113,15 @@ async function openCam(idx) {
   video.srcObject = stream; await video.play();
   // 修正默认变焦：部分多摄机型（实测 OPPO）默认流是高倍裁切（≈5×）→ 拉回最小倍率
   try {
-    const track = stream.getVideoTracks()[0];
-    const caps = track.getCapabilities ? track.getCapabilities() : {};
-    if (caps.zoom) {
-      await track.applyConstraints({ advanced: [{ zoom: caps.zoom.min || 1 }] });
-      window.__zoom = { min: caps.zoom.min, max: caps.zoom.max, now: track.getSettings ? track.getSettings().zoom : null };
-    } else window.__zoom = null;
-    const st = track.getSettings ? track.getSettings() : {};
-    $('pZoom').textContent = `${st.width || '?'}×${st.height || '?'} · ${st.resizeMode || '?'} · zoom ${st.zoom ?? '不支持'}` +
-      (caps.zoom ? `（可调 ${caps.zoom.min}~${caps.zoom.max}）` : '');
-    window.__track = { caps: { zoom: caps.zoom || null, resizeMode: caps.resizeMode || null }, settings: st };
+    camTrack = stream.getVideoTracks()[0];
+    const caps = camTrack.getCapabilities ? camTrack.getCapabilities() : {};
+    zoomCaps = caps.zoom || null;
+    if (zoomCaps) await camTrack.applyConstraints({ advanced: [{ zoom: zoomCaps.min || 1 }] });
+    curZoom = camTrack.getSettings ? (camTrack.getSettings().zoom ?? 1) : 1;
+    window.__zoom = zoomCaps ? { min: zoomCaps.min, max: zoomCaps.max, now: curZoom } : null;
+    window.__track = { caps: { zoom: zoomCaps, resizeMode: caps.resizeMode || null }, settings: camTrack.getSettings ? camTrack.getSettings() : {} };
+    showTrackInfo();
+    buildZoomBar();
   } catch (e) { window.__zoom = 'err:' + e.name; $('pZoom').textContent = 'err ' + e.name; }
   listCams();
 }
