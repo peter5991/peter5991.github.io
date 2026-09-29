@@ -74,7 +74,8 @@ footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-heig
     重力-法向 <b id="pGrav">–</b>°<br>
     位置(相对) <b id="pPos">0, 0, 0</b><br>
     丢弃帧 <b id="pRej">0</b> · 静止抖动σ <b id="pJit">–</b>°<br>
-    IMU <b id="pImu">未连接</b>
+    IMU <b id="pImu">未连接</b><br>
+    镜头 <b id="pZoom">–</b>
   </div>
 </div>
 
@@ -986,7 +987,7 @@ async function listCams() {
   try {
     const ds = await navigator.mediaDevices.enumerateDevices();
     camDevs = ds.filter(d => d.kind === 'videoinput');
-    $('btnLens').textContent = '镜头×' + Math.max(1, camDevs.length);
+    $('btnLens').textContent = '切换镜头(' + Math.max(1, camDevs.length) + ')';
     if (camDevs.length > 1) $('btnLens').style.borderColor = '#8052ff';
     window.__cams = camDevs.map(d => d.label || '(无标签)');
   } catch (e) {}
@@ -998,6 +999,18 @@ async function openCam(idx) {
   const stream = await navigator.mediaDevices.getUserMedia(cons);
   if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
   video.srcObject = stream; await video.play();
+  // 修正默认变焦：部分多摄机型（实测 OPPO）默认流是高倍裁切（≈5×）→ 拉回最小倍率
+  // 焦距不变假设是追踪前提，zoom 固定最小值后不再动
+  try {
+    const track = stream.getVideoTracks()[0];
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    if (caps.zoom) {
+      await track.applyConstraints({ advanced: [{ zoom: caps.zoom.min || 1 }] });
+      window.__zoom = { min: caps.zoom.min, max: caps.zoom.max, now: track.getSettings ? track.getSettings().zoom : null };
+    } else window.__zoom = null;   // 浏览器不支持 zoom 约束（等真机回报）
+  } catch (e) { window.__zoom = 'err:' + e.name; }
+  const z = window.__zoom;
+  $('pZoom').textContent = z && z.min !== undefined ? `zoom ${z.now ?? '?'}（范围 ${z.min}~${z.max}）` : '不支持 zoom 约束';
   listCams();
 }
 $('btnLens').onclick = async () => {
