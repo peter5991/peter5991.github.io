@@ -70,7 +70,7 @@ footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-heig
   <canvas id="pathCv" width="360" height="360"></canvas>
   <div id="poseInfo">
     状态 <b id="pState">–</b><br>
-    尺度 s <b id="pS">–</b> · 暗帧 <b id="pDark">0</b><br>
+    尺度 s <b id="pS">–</b> · 焦距 f <b id="pF">–</b> · 暗帧 <b id="pDark">0</b><br>
     重力-法向 <b id="pGrav">–</b>°<br>
     位置(相对) <b id="pPos">0, 0, 0</b><br>
     丢弃帧 <b id="pRej">0</b> · 静止抖动σ <b id="pJit">–</b>°<br>
@@ -117,7 +117,7 @@ const pathCv = document.getElementById('pathCv'), pctx = pathCv.getContext('2d')
 const msg = document.getElementById('msg');
 const $ = id => document.getElementById(id);
 const pState = $('pState'), pS = $('pS'), pPos = $('pPos'), pImu = $('pImu'), pRej = $('pRej'),
-      pDark = $('pDark'), pGrav = $('pGrav'), pJit = $('pJit');
+      pDark = $('pDark'), pGrav = $('pGrav'), pJit = $('pJit'), pF = $('pF');
 
 // ============ 3×3 矩阵小工具（行主序数组） ============
 const I3 = () => [1,0,0, 0,1,0, 0,0,1];
@@ -150,6 +150,7 @@ let planeN = null, planeD = 0, planeInl = 0, planeReady = false;   // 平面持�
 let planeHull = null;                            // 平面范围凸包（世界系 3D 顶点环，"点连成面"）
 let anchors = [];                                // [{w:[x,y,z]}]
 let recoveries = 0, darkCnt = 0, lastS = null, gravCam = null;
+let fSamples = [], lastCalT = 0;               // 焦距自标定（纯旋转期 Δpx=f·Δθ）
 // IMU
 let imuQ = null, imuQPrev = null, imuReady = false, imuViaGyro = false;
 let imuEvtCnt = 0, imuNullCnt = 0, motionEvtCnt = 0;
@@ -325,6 +326,16 @@ function projectW(R, T, Xw) {                              // 世界点 → 处�
   const Xc = camPt(R, T, Xw);
   if (Xc[2] < 0.02) return null;
   return [Xc[0]/Xc[2]*focal + cx, Xc[1]/Xc[2]*focal + cy];
+}
+// 焦距修正时按比例重塑世界（重投影位置不变，尺度本就任意；KF/平面/锚点同步缩）
+function rescaleWorld(s) {
+  for (const p of pts) if (p.w3d) p.w3d = p.w3d.map(v => v * s);
+  for (const a of anchors) a.w = a.w.map(v => v * s);
+  poseT = poseT.map(v => v * s);
+  if (planeN) planeD *= s;
+  if (planeHull) planeHull = planeHull.map(X => X.map(v => v * s));
+  if (kf) { kf.T = kf.T.map(v => v * s); for (const q of kf.pts) if (q.w3d) q.w3d = q.w3d.map(v => v * s); }
+  path = path.map(([x, z]) => [x * s, z * s]);
 }
 
 // ============ D3：尺度传播 + 点云 ============
@@ -817,6 +828,35 @@ function loop(t) {
   } else lostFrameCnt = 0;
   imuQPrev = imuQ;
 
+  // ---- 焦距自标定（纯旋转期：Δpx = f·Δθ；IMU 给 Δθ，LK 帧间流给 Δpx） ----
+  // 根因修复：多摄机型默认高倍裁切流（实测 ≈5×）→ 焦距假设错 → 三角化深度按比例错 → 锚点钉不住
+  if (!dark && corresp && imuRot !== null && imuRot > 0.2 && imuRot < 4 && pts.length >= 40) {
+    const mags = [];
+    let ux = 0, uy = 0;
+    for (const p of pts) {
+      const dx = p.x - p.px, dy = p.y - p.py, m = Math.hypot(dx, dy);
+      if (m > 0.5 && m < 40) { mags.push(m); ux += dx / m; uy += dy / m; }
+    }
+    if (mags.length >= 30) {
+      const Rdir = Math.hypot(ux, uy) / mags.length;       // 流向一致性：纯旋转时全场同向（1=完全一致）
+      mags.sort((a, b) => a - b);
+      const med = mags[mags.length >> 1];
+      if (Rdir > 0.9 && med > 1) {
+        const fEst = med / (imuRot * Math.PI / 180);
+        if (fEst > 150 && fEst < 4000) fSamples.push(fEst);
+      }
+    }
+  }
+  if (fSamples.length >= 30 && t - lastCalT > 2000) {      // 2s 节律收敛评估
+    const sorted = [...fSamples].sort((a, b) => a - b);
+    const fMed = sorted[sorted.length >> 1];
+    if (Math.abs(fMed - focal) / focal > 0.05) {
+      rescaleWorld(fMed / focal);
+      focal = fMed;
+    }
+    fSamples = []; lastCalT = t;
+  }
+
   // ---- 静止抖动统计 + 陀螺零偏估计（中位流速<0.3px 视为静止） ----
   if (state === 'TRACK') {
     let flows = [];
@@ -942,6 +982,7 @@ function loop(t) {
   pState.textContent = dark ? '暗帧' : state === 'TRACK' ? '跟踪中' : state === 'IMU' ? 'IMU 外推' : state === 'LOST' ? '丢失' : '初始化';
   pState.className = state === 'TRACK' && !dark ? 'stTrack' : state === 'IMU' ? 'stImu' : 'stLost';
   pS.textContent = lastS !== null ? lastS.toFixed(2) : '–';
+  pF.textContent = focal.toFixed(0) + (fSamples.length ? `(${fSamples.length})` : '');
   pDark.textContent = darkCnt;
   if (planeReady && gravCam) {
     const nCam = mv33(tr33(poseR), planeN);   // 世界法向 → 相机系
@@ -977,7 +1018,7 @@ $('btnCam').onclick = async () => {
   setMsg('请求摄像头权限…');
   try {
     await openCam(-1);
-    setMsg('运行中。先缓慢横移扫描（点云/平面增长），平面区域变绿后点按画面放方块。');
+    setMsg('运行中。①先原地缓慢左右转动手机几秒（焦距自标定，看 f 读数收敛）；②再横移扫描出平面区域；③点按放方块。');
     startLoop();
   } catch (e) { setMsg('摄像头失败：' + e.name, true); }
 };
@@ -993,7 +1034,7 @@ async function listCams() {
   } catch (e) {}
 }
 async function openCam(idx) {
-  const cons = { video: { width: { ideal: 640 }, height: { ideal: 480 } }, audio: false };
+  const cons = { video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false };   // 高分辨率请求避开部分机型的低分辨率 sensor 裁切模式
   if (idx >= 0 && camDevs[idx]) cons.video.deviceId = { exact: camDevs[idx].deviceId };
   else cons.video.facingMode = { ideal: 'environment' };
   const stream = await navigator.mediaDevices.getUserMedia(cons);
