@@ -32,11 +32,11 @@ button:active{border-color:var(--iris)}
 button.primary{background:var(--iris);border-color:var(--iris)}
 #msg{padding:0 16px 10px;font-size:12px;color:var(--ash);line-height:1.7}
 #msg.err{color:var(--red)}
-#zoomBar{display:flex;gap:8px;padding:0 16px 10px;align-items:center}
-#zoomBar[hidden]{display:none}
-#zoomBar button{flex:1;padding:8px 4px;font-size:12px}
-#zoomBar button.on{border-color:var(--verdant);color:var(--verdant)}
-#zoomBar .zoomInfo{flex:1.6;font-size:11px;color:var(--ash);line-height:1.4}
+#zoomBar,#resBar{display:flex;gap:8px;padding:0 16px 10px;align-items:center}
+#zoomBar[hidden],#resBar[hidden]{display:none}
+#zoomBar button,#resBar button{flex:1;padding:8px 4px;font-size:12px}
+#zoomBar button.on,#resBar button.on{border-color:var(--verdant);color:var(--verdant)}
+#zoomBar .zoomInfo,#resBar .zoomInfo{flex:1.6;font-size:11px;color:var(--ash);line-height:1.4}
 footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-height:1.6}
 /* 手机适配：数据面板纵向堆叠（轨迹图缩到上方小图，数据全宽），HUD 两行三列 */
 @media (max-width: 640px) {
@@ -47,7 +47,7 @@ footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-heig
   #hud .v{font-size:16px}
   #controls{flex-wrap:wrap}
   #controls button{flex:1 1 40%}
-  #zoomBar{flex-wrap:wrap}
+  #zoomBar,#resBar{flex-wrap:wrap}
 }
 </style>
 </head>
@@ -76,7 +76,7 @@ footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-heig
   <canvas id="pathCv" width="360" height="360"></canvas>
   <div id="poseInfo">
     状态 <b id="pState">–</b><br>
-    尺度 s <b id="pS">–</b> · 焦距 f <b id="pF">–</b> · 暗帧 <b id="pDark">0</b><br>
+    尺度 s <b id="pS">–</b> · 焦距 f <b id="pF">–</b> · 视场 <b id="pFov">–</b>° · 暗帧 <b id="pDark">0</b><br>
     重力-法向 <b id="pGrav">–</b>°<br>
     位置(相对) <b id="pPos">0, 0, 0</b><br>
     丢弃帧 <b id="pRej">0</b> · 静止抖动σ <b id="pJit">–</b>°<br>
@@ -93,6 +93,8 @@ footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-heig
 </div>
 
 <div id="zoomBar" hidden></div>
+
+<div id="resBar" hidden></div>
 
 <p id="msg">验收三步：①缓慢移动扫描环境，平面区域（青色凸包）出现后<b>点按画面</b>放置方块；②走开 2~3m 回看——方块应钉在原位；③手掌遮镜头 2s 拿开——方块不消失，恢复计数 +1。</p>
 <footer>jsfeat (MIT) · D2 位姿链 + 尺度传播稀疏点云 → 逐点法向(邻域PCA) + 重力 1-DOF 投票 / 法向一致 RANSAC 双路平面分割 + 凸包范围（Quest Scene Mesh 思路稀疏适配）→ 射线求交锚点 · 丢踪=KF 快照 LK/最近邻双路恢复（FB 校验）· 暗帧门控 · 陀螺零偏估计</footer>
@@ -1012,6 +1014,8 @@ function loop(t) {
   pState.className = state === 'TRACK' && !dark ? 'stTrack' : state === 'IMU' ? 'stImu' : 'stLost';
   pS.textContent = lastS !== null ? lastS.toFixed(2) : '–';
   pF.textContent = focal.toFixed(0) + (fSamples.length ? `(${fSamples.length})` : '');
+  // 视场角由收敛焦距反推（客观真值，不靠目测）：主摄 1× 正常 ≈70~80°，明显偏小=流是中心裁切模式
+  $('pFov').textContent = (2 * Math.atan(procW / 2 / focal) * 180 / Math.PI).toFixed(0);
   pDark.textContent = darkCnt;
   if (planeReady && gravCam) {
     const nCam = mv33(tr33(poseR), planeN);   // 世界法向 → 相机系
@@ -1117,6 +1121,48 @@ function buildZoomBar() {
   bar.appendChild(info);
   markZoomBar();
 }
+// ============ 视场档位（分辨率请求引导浏览器选原生 sensor 模式：低分辨率档在部分机型=中心裁切→视场窄；高档位=全视场合并读出） ============
+const RES_PRESETS = [0, 480, 960, 1440, 2448];   // 0=自动(不指定)；值=短边像素，按 4:3 请求（贴近相机 app 全传感器比例）
+let curRes = 0, resBusy = false;
+async function setRes(short) {
+  if (!camTrack || resBusy) return;
+  resBusy = true; curRes = short; markResBar();
+  try {
+    const cons = short ? { width: { ideal: short * 4 / 3 }, height: { ideal: short }, resizeMode: 'none' } : { resizeMode: 'none' };
+    await camTrack.applyConstraints(cons);
+    const st = camTrack.getSettings ? camTrack.getSettings() : {};
+    if (short) {
+      const got = Math.min(st.width || 0, st.height || 0);
+      if (Math.abs(got - short) / short > 0.25) setMsg(`视场档位请求短边 ${short} 但实际 ${st.width}×${st.height}——浏览器选了最接近的原生模式`, true);
+    }
+    if (zoomCaps) {   // 分辨率切换可能重置变焦 → 拉回最小倍率拿最宽视场
+      try { await camTrack.applyConstraints({ advanced: [{ zoom: zoomCaps.min || 1 }] }); } catch (e) {}
+    }
+    curZoom = camTrack.getSettings ? (camTrack.getSettings().zoom ?? curZoom) : curZoom;
+    fSamples = []; lastCalT = 0;                    // 视场若变，有效焦距跟着变 → 标定重收敛
+    showTrackInfo(); markZoomBar();
+  } catch (e) {
+    setMsg('视场档位切换报错：' + e.name + (e.message ? '（' + e.message + '）' : ''), true);
+  }
+  resBusy = false;
+}
+function markResBar() {
+  for (const b of $('resBar').querySelectorAll('button'))
+    b.classList.toggle('on', parseInt(b.dataset.v) === curRes);
+}
+function buildResBar() {
+  const bar = $('resBar'); bar.innerHTML = ''; bar.hidden = false;
+  const lab = document.createElement('span'); lab.className = 'zoomInfo'; lab.textContent = '视场档位';
+  bar.appendChild(lab);
+  for (const v of RES_PRESETS) {
+    const b = document.createElement('button');
+    b.textContent = v ? String(v) : '自动';
+    b.dataset.v = v;
+    b.onclick = () => setRes(v);
+    bar.appendChild(b);
+  }
+  markResBar();
+}
 async function openCam(idx) {
   // resizeMode:'none' = 禁止浏览器裁切/缩放传感器输出（crop-and-scale 是 5× 放大根因嫌疑）；
   // 不指定分辨率 → 浏览器给默认预览模式（通常是全视场 binning）
@@ -1137,6 +1183,7 @@ async function openCam(idx) {
     window.__track = { caps: { zoom: zoomCaps, resizeMode: caps.resizeMode || null }, settings: camTrack.getSettings ? camTrack.getSettings() : {} };
     showTrackInfo();
     buildZoomBar();
+    buildResBar();
   } catch (e) { window.__zoom = 'err:' + e.name; $('pZoom').textContent = 'err ' + e.name; }
   listCams();
 }
