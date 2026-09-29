@@ -80,7 +80,7 @@ footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-heig
   <canvas id="pathCv" width="360" height="360"></canvas>
   <div id="poseInfo">
     状态 <b id="pState">–</b><br>
-    尺度 s <b id="pS">–</b> · 焦距 f <b id="pF">–</b> · 视场 <b id="pFov">–</b>° · 暗帧 <b id="pDark">0</b><br>
+    尺度 s <b id="pS">–</b> · 焦距 f <b id="pF">–</b> · 视场 <b id="pFov">–</b>° · 暗帧 <b id="pDark">0</b> · 线加速度 <b id="pAcc">–</b><br>
     重力-法向 <b id="pGrav">–</b>°<br>
     位置(相对) <b id="pPos">0, 0, 0</b><br>
     丢弃帧 <b id="pRej">0</b> · 静止抖动σ <b id="pJit">–</b>° · 重投影 <b id="pRepr">–</b>px<br>
@@ -182,6 +182,7 @@ let camTrack = null, zoomCaps = null, curZoom = 1;  // 变焦控制（applyConst
 let imuQ = null, imuQPrev = null, imuReady = false, imuViaGyro = false;
 let imuEvtCnt = 0, imuNullCnt = 0, motionEvtCnt = 0;
 let lastRate = null, biasWin = [], gyroBias = [0,0,0];
+let linAccEMA = null;                          // 线加速度 EMA（|a+g|−9.81）：步行/横移时升高 → 焦距采样门控
 const qmul = (a, b) => [
   a[0]*b[0]-a[1]*b[1]-a[2]*b[2]-a[3]*b[3],
   a[0]*b[1]+a[1]*b[0]+a[2]*b[3]-a[3]*b[2],
@@ -912,6 +913,8 @@ if (window.DeviceMotionEvent) {
     if (ag && ag.x !== null) {
       const g = norm3([ag.x, -ag.y, -ag.z]);
       gravCam = gravCam ? norm3([gravCam[0]*0.95+g[0]*0.05, gravCam[1]*0.95+g[1]*0.05, gravCam[2]*0.95+g[2]*0.05]) : g;
+      const la = Math.abs(Math.hypot(ag.x, ag.y, ag.z) - 9.81);
+      linAccEMA = linAccEMA === null ? la : linAccEMA * 0.9 + la * 0.1;   // 步行/横移时 >0.8 → 焦距采样排除该帧
     }
     const r = e.rotationRate;
     if (!r || r.alpha === null) return;
@@ -1060,7 +1063,10 @@ function loop(t) {
   // ---- 焦距自标定（纯旋转期：Δpx = f·Δθ；IMU 给 Δθ，LK 帧间流给 Δpx） ----
   // 根因修复：多摄机型默认高倍裁切流（实测 ≈5×）→ 焦距假设错 → 三角化深度按比例错 → 锚点钉不住
   // focalLock=锁定诊断：锁后采样与收敛全停，世界不再重塑——隔离"f 漂移"与"旋转链路"两嫌疑
-  if (!focalLock && !dark && corresp && imuRot !== null && imuRot > 0.2 && imuRot < 4 && pts.length >= 40) {
+  // 平移污染双门控（真机根因：走动+转弯时流向一致性照样达标，f=流/θ 被污染 → 收敛史 665→912→227 乱跳）：
+  // ①线加速度 EMA ≥0.8 = 在走动，不采；②流场幅度均匀性——纯旋转幅度均匀，平移流场随深度散布
+  if (!focalLock && !dark && corresp && imuRot !== null && imuRot > 0.2 && imuRot < 4 && pts.length >= 40
+      && (linAccEMA === null || linAccEMA < 0.8)) {
     const mags = [];
     let ux = 0, uy = 0;
     for (const p of pts) {
@@ -1071,31 +1077,49 @@ function loop(t) {
       const Rdir = Math.hypot(ux, uy) / mags.length;       // 流向一致性：纯旋转时全场同向（1=完全一致）
       mags.sort((a, b) => a - b);
       const med = mags[mags.length >> 1];
-      if (Rdir > 0.9 && med > 1) {
+      let mu = 0; for (const m of mags) mu += m; mu /= mags.length;
+      let sd = 0; for (const m of mags) sd += (m - mu) * (m - mu); sd = Math.sqrt(sd / mags.length);
+      if (Rdir > 0.9 && med > 1 && sd / mu < 0.35) {
         const fEst = med / (imuRot * Math.PI / 180);
-        if (fEst > 150 && fEst < 4000) fSamples.push(fEst);
+        if (fEst > 60 && fEst < 4000) fSamples.push(fEst);   // 下限 60：超广角真值 f≈100（旧 150 会误杀）
       }
     }
   }
   if (!focalLock && fSamples.length >= 30 && t - lastCalT > 2000) {      // 2s 节律收敛评估
     const sorted = [...fSamples].sort((a, b) => a - b);
     const fMed = sorted[sorted.length >> 1];
-    if (Math.abs(fMed - focal) / focal > 0.05) {
-      rescaleWorld(fMed / focal);
-      focal = fMed;
-    }
-    fHist.push(Math.round(fMed)); if (fHist.length > 6) fHist.shift();
-    fSamples = []; lastCalT = t; fStale = false;
-    // 视场闭环：收敛后仍窄（<60°=主摄裁切模式）→ 自动重开掷下一次（物理镜头选择=每开流一次骰子）
-    const fovNow = 2 * Math.atan(procW / 2 / focal) * 180 / Math.PI;
-    if (fovNow < 60 && camTrack) {
-      if (wideRetries < 3) {
-        wideRetries++; fStale = true;
-        setMsg(`视场 ${fovNow.toFixed(0)}° 仍窄，自动重开试广角（第 ${wideRetries} 次）…`);
-        reopenCam();
-      } else if (!window.__wideGaveUp) {
-        window.__wideGaveUp = true;
-        setMsg('自动重开 3 次仍是窄视场——请手动点任意档位按钮再试（度数带 ? = 未重新标定）', true);
+    const iqr = sorted[(sorted.length * 3) >> 2] - sorted[sorted.length >> 2];
+    if (iqr / fMed > 0.2) {                                // 样本发散=采样期混入平移/抖动——不应用，继续累积
+      if (fSamples.length >= 120) {
+        fSamples = [];
+        setMsg('焦距标定样本发散（转动中混入了平移）。请站定扶稳，只原地转动手机几秒。', true);
+      }
+      lastCalT = t;
+    } else {
+      const ratio = fMed / focal;
+      if (ratio > 1.2 || ratio < 0.8) {
+        // 大幅修正=旧世界由错误 f 构建（混合尺度世界无法靠重塑修复）→ 清空间数据重建，位姿/轨迹保留
+        focal = fMed;
+        mapPts = []; planes = []; anchors = []; cloudN = 0; kf = null;
+        for (const p of pts) p.w3d = null;
+        setMsg(`焦距大幅修正为 ${fMed.toFixed(0)}——旧空间数据建立在错误焦距上，已清空重建，请重新扫描。`);
+      } else if (Math.abs(fMed - focal) / focal > 0.05) {
+        rescaleWorld(ratio);
+        focal = fMed;
+      }
+      fHist.push(Math.round(fMed)); if (fHist.length > 6) fHist.shift();
+      fSamples = []; lastCalT = t; fStale = false;
+      // 视场闭环：收敛后仍窄（<60°=主摄裁切模式）→ 自动重开掷下一次（物理镜头选择=每开流一次骰子）
+      const fovNow = 2 * Math.atan(procW / 2 / focal) * 180 / Math.PI;
+      if (fovNow < 60 && camTrack) {
+        if (wideRetries < 3) {
+          wideRetries++; fStale = true;
+          setMsg(`视场 ${fovNow.toFixed(0)}° 仍窄，自动重开试广角（第 ${wideRetries} 次）…`);
+          reopenCam();
+        } else if (!window.__wideGaveUp) {
+          window.__wideGaveUp = true;
+          setMsg('自动重开 3 次仍是窄视场——请手动点任意档位按钮再试（度数带 ? = 未重新标定）', true);
+        }
       }
     }
   }
@@ -1247,6 +1271,7 @@ function loop(t) {
   // 带 ? = 焦距未重新标定（切档/变焦后需转动手机重收敛，此前显示的是旧值）
   $('pFov').textContent = (2 * Math.atan(procW / 2 / focal) * 180 / Math.PI).toFixed(0) + (fStale ? '?' : '');
   pDark.textContent = darkCnt;
+  $('pAcc').textContent = linAccEMA !== null ? linAccEMA.toFixed(2) : '–';
   let hPlaneRef = null;                                  // 重力-法向校验口：取最大水平面（重力锁路径）
   for (const pl of planes) if (pl.lockN && (!hPlaneRef || pl.inl > hPlaneRef.inl)) hPlaneRef = pl;
   if (hPlaneRef && gravCam) {
@@ -1298,7 +1323,7 @@ $('btnCam').onclick = async () => {
   setMsg('请求摄像头权限…');
   try {
     await openCam(-1);
-    setMsg('运行中。①先原地缓慢左右转动手机几秒（焦距自标定，看 f 读数收敛）；②再横移扫描出平面区域；③点按放方块。');
+    setMsg('运行中。①<b>站定扶稳（不要走动）</b>，原地转动手机几秒——焦距自标定，f 读数收敛且不再跳变即完成；②再横移扫描出平面区域；③点彩色区域放方块。');
     startLoop();
   } catch (e) { setMsg('摄像头失败：' + e.name, true); }
 };
