@@ -164,6 +164,7 @@ let planeHull = null;                            // 平面范围凸包（世界�
 let anchors = [];                                // [{w:[x,y,z]}]
 let recoveries = 0, darkCnt = 0, lastS = null, gravCam = null;
 let fSamples = [], lastCalT = 0;               // 焦距自标定（纯旋转期 Δpx=f·Δθ）
+let wideRetries = 0, fStale = true;            // 视场闭环：自动重开预算 + "度数未重新标定"标记
 let camTrack = null, zoomCaps = null, curZoom = 1;  // 变焦控制（applyConstraints zoom）
 // IMU
 let imuQ = null, imuQPrev = null, imuReady = false, imuViaGyro = false;
@@ -889,7 +890,19 @@ function loop(t) {
       rescaleWorld(fMed / focal);
       focal = fMed;
     }
-    fSamples = []; lastCalT = t;
+    fSamples = []; lastCalT = t; fStale = false;
+    // 视场闭环：收敛后仍窄（<60°=主摄裁切模式）→ 自动重开掷下一次（物理镜头选择=每开流一次骰子）
+    const fovNow = 2 * Math.atan(procW / 2 / focal) * 180 / Math.PI;
+    if (fovNow < 60 && camTrack) {
+      if (wideRetries < 3) {
+        wideRetries++; fStale = true;
+        setMsg(`视场 ${fovNow.toFixed(0)}° 仍窄，自动重开试广角（第 ${wideRetries} 次）…`);
+        reopenCam();
+      } else if (!window.__wideGaveUp) {
+        window.__wideGaveUp = true;
+        setMsg('自动重开 3 次仍是窄视场——请手动点任意档位按钮再试（度数带 ? = 未重新标定）', true);
+      }
+    }
   }
 
   // ---- 静止抖动统计 + 陀螺零偏估计（中位流速<0.3px 视为静止） ----
@@ -1019,7 +1032,8 @@ function loop(t) {
   pS.textContent = lastS !== null ? lastS.toFixed(2) : '–';
   pF.textContent = focal.toFixed(0) + (fSamples.length ? `(${fSamples.length})` : '');
   // 视场角由收敛焦距反推（客观真值，不靠目测）：主摄 1× 正常 ≈70~80°，明显偏小=流是中心裁切模式
-  $('pFov').textContent = (2 * Math.atan(procW / 2 / focal) * 180 / Math.PI).toFixed(0);
+  // 带 ? = 焦距未重新标定（切档/变焦后需转动手机重收敛，此前显示的是旧值）
+  $('pFov').textContent = (2 * Math.atan(procW / 2 / focal) * 180 / Math.PI).toFixed(0) + (fStale ? '?' : '');
   pDark.textContent = darkCnt;
   if (planeReady && gravCam) {
     const nCam = mv33(tr33(poseR), planeN);   // 世界法向 → 相机系
@@ -1102,7 +1116,7 @@ async function setZoom(z) {
     if (actual != null && Math.abs(actual - z) > 0.06)
       setMsg(`变焦请求 ${z}× 但实际仍是 ${actual}×——本浏览器拒绝执行变焦`, true);
     if (window.__zoom) window.__zoom.now = curZoom;
-    fSamples = []; lastCalT = 0;                   // 有效焦距变了 → 重新收敛（偏差>5% 时世界按比例重塑）
+    fSamples = []; lastCalT = 0; fStale = true;  // 有效焦距变了 → 重新收敛（偏差>5% 时世界按比例重塑）
     showTrackInfo(); markZoomBar();
   } catch (e) {
     setMsg('变焦调用报错：' + e.name + (e.message ? '（' + e.message + '）' : ''), true);  // Fail Loud，不再静默吞错
@@ -1160,7 +1174,8 @@ async function setRes(short) {
       await reopenCam();                        // 回退自动档
       setMsg(`短边 ${short || '自动'} 档黑屏无画面——本机不支持该模式，已回退自动档`, true);
     } else {
-      fSamples = []; lastCalT = 0;              // 视场若变，有效焦距跟着变 → 标定重收敛
+      fSamples = []; lastCalT = 0; fStale = true;  // 视场若变，有效焦距跟着变 → 标定重收敛
+      wideRetries = 0; window.__wideGaveUp = false;  // 手动切档=新的骰子 → 重置自动重开预算
       const st = camTrack.getSettings ? camTrack.getSettings() : {};
       setMsg(`已切到 ${short || '自动'} 档（实际 ${st.width || '?'}×${st.height || '?'}）。<b>原地转动手机几秒重新标定焦距，"视场"度数才会更新</b>。`);
     }
@@ -1195,7 +1210,7 @@ async function openCam(idx) {
     setMsg('首开完成，自动重开一次切换广角…');
     await waitFrames(1500);
     await reopenCam();
-    fSamples = []; lastCalT = 0;
+    fSamples = []; lastCalT = 0; fStale = true;
   }
 }
 // 开流/重开流：resizeMode:'none' = 禁止浏览器裁切/缩放传感器输出；分辨率只作打开约束（不热切换）
