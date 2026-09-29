@@ -36,7 +36,7 @@ button.primary{background:var(--iris);border-color:var(--iris)}
 #zoomBar[hidden]{display:none}
 #zoomBar button{flex:1;padding:8px 4px;font-size:12px}
 #zoomBar button.on{border-color:var(--verdant);color:var(--verdant)}
-#zoomHint{flex:1;font-size:12px;color:var(--ash);text-align:center}
+#zoomBar .zoomInfo{flex:1.6;font-size:11px;color:var(--ash);line-height:1.4}
 footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-height:1.6}
 /* 手机适配：数据面板纵向堆叠（轨迹图缩到上方小图，数据全宽），HUD 两行三列 */
 @media (max-width: 640px) {
@@ -47,6 +47,7 @@ footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-heig
   #hud .v{font-size:16px}
   #controls{flex-wrap:wrap}
   #controls button{flex:1 1 40%}
+  #zoomBar{flex-wrap:wrap}
 }
 </style>
 </head>
@@ -1057,6 +1058,7 @@ async function listCams() {
     const ds = await navigator.mediaDevices.enumerateDevices();
     camDevs = ds.filter(d => d.kind === 'videoinput');
     window.__cams = camDevs.map(d => d.label || '(无标签)');
+    if (!$('zoomBar').hidden && !zoomCaps) buildZoomBar();   // 授权后才有标签 → 刷新提示行（确认超广角是否藏为独立设备）
   } catch (e) {}
 }
 // ============ 变焦控制（倍率按钮 + 捏合手势共用；变焦改变有效焦距 → 标定样本清零重收敛） ============
@@ -1073,23 +1075,35 @@ async function setZoom(z) {
   if (zoomBusy) { zoomPending = z; return; }      // 捏合期间高频调用 → 只保留最新值排队
   zoomBusy = true;
   try {
-    await camTrack.applyConstraints({ advanced: [{ zoom: z }] });
-    curZoom = camTrack.getSettings ? (camTrack.getSettings().zoom ?? z) : z;
+    try { await camTrack.applyConstraints({ advanced: [{ zoom: z }] }); }
+    catch (e1) { await camTrack.applyConstraints({ zoom: z }); }   // 有的实现只认顶层形式
+    const actual = camTrack.getSettings ? camTrack.getSettings().zoom : null;
+    curZoom = actual ?? z;
+    if (actual != null && Math.abs(actual - z) > 0.06)
+      setMsg(`变焦请求 ${z}× 但实际仍是 ${actual}×——本浏览器拒绝执行变焦`, true);
     if (window.__zoom) window.__zoom.now = curZoom;
     fSamples = []; lastCalT = 0;                   // 有效焦距变了 → 重新收敛（偏差>5% 时世界按比例重塑）
     showTrackInfo(); markZoomBar();
-  } catch (e) {}
+  } catch (e) {
+    setMsg('变焦调用报错：' + e.name + (e.message ? '（' + e.message + '）' : ''), true);  // Fail Loud，不再静默吞错
+  }
   zoomBusy = false;
   if (zoomPending !== null) { const p = zoomPending; zoomPending = null; setZoom(p); }
 }
 function markZoomBar() {
-  for (const b of $('zoomBar').querySelectorAll('button'))
+  const bar = $('zoomBar');
+  for (const b of bar.querySelectorAll('button'))
     b.classList.toggle('on', Math.abs(parseFloat(b.dataset.z) - curZoom) < 0.05);
+  const info = $('zoomInfo');
+  if (info && zoomCaps) info.textContent = `当前 ${Math.round(curZoom * 10) / 10}× · 可调范围 ${zoomCaps.min}~${zoomCaps.max}`;
 }
 function buildZoomBar() {
   const bar = $('zoomBar'); bar.innerHTML = ''; bar.hidden = false;
+  const info = document.createElement('span'); info.id = 'zoomInfo'; info.className = 'zoomInfo';
   if (!zoomCaps) {
-    bar.innerHTML = '<span id="zoomHint">本浏览器未暴露变焦调节（zoom 不支持）——视场仍过窄请换 Chrome 对比</span>';
+    const labels = (window.__cams || []).join('、') || '(枚举无标签)';
+    info.textContent = `zoom 不支持 · 枚举摄像头：${labels} → 本浏览器调不了视场，请换 Chrome 对比`;
+    bar.appendChild(info);
     return;
   }
   const presets = [...new Set([zoomCaps.min, 1, 2].filter(v => v >= zoomCaps.min - 1e-6 && v <= zoomCaps.max + 1e-6))].sort((a, b) => a - b);
@@ -1100,6 +1114,7 @@ function buildZoomBar() {
     b.onclick = () => setZoom(v);
     bar.appendChild(b);
   }
+  bar.appendChild(info);
   markZoomBar();
 }
 async function openCam(idx) {
