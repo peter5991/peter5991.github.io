@@ -73,6 +73,8 @@ env.allowRemoteModels = false;
 env.allowLocalModels = true;
 env.localModelPath = new URL('./models/', location.href).href;
 env.backends.onnx.wasm.wasmPaths = new URL('./vendor/transformers/', location.href).href;
+// WASM 后端默认在主线程初始化+推理 → 手机上整页冻结几十秒（真机"卡在 json"根因）；proxy=ORT 自建 worker 跑 WASM
+env.backends.onnx.wasm.proxy = true;
 
 const MODEL_ID = 'depth-anything-v2-small';
 const SHORT_SIDES = [252, 364, 518];     // 518=模型训练分辨率；均为 14 的倍数（ViT patch）
@@ -82,14 +84,27 @@ const video = $('cam'), depthCv = $('depthCv');
 const probe = window.__probe = { env: {}, bench: [], live: null };
 let selIdx = -1, liveOn = false, busy = false;
 const MB = b => (b / 1048576).toFixed(1);
-// 下载进度：模型 27~50MB，移动网络下无进度=看似卡死
-function progressCb(tag) {
-  const t0 = performance.now();
+// 加载心跳：每秒刷新 已用时 + 最后进度 + 已完成资源（Resource Timing）——区分"慢但在下"与"真卡死"
+// 进度不依赖 total：gzip 传输时部分浏览器不暴露 content-length，旧版因 !total 过滤而不显示进度
+let lastProg = '无进度事件';
+function progressCb() {
   return p => {
-    if (p.status !== 'progress' || !p.total) return;
-    const s = (performance.now() - t0) / 1000;
-    msg(`加载 ${tag}：${p.file} ${MB(p.loaded)}/${MB(p.total)}MB（${(p.loaded / p.total * 100).toFixed(0)}%，${MB(p.loaded / s)}MB/s）`);
+    if (p.status !== 'progress') return;
+    lastProg = `${p.file} ${MB(p.loaded)}MB` + (p.total ? `/${MB(p.total)}MB` : '（总大小未知）');
   };
+}
+function loadHeartbeat(tag) {
+  const t0 = performance.now(); lastProg = '无进度事件';
+  const done = () => performance.getEntriesByType('resource')
+    .filter(e => /\.(onnx|wasm|json|mjs)(\?|$)/.test(e.name) && e.startTime >= t0 - 50)
+    .map(e => `${e.name.split('/').pop()} ${MB(e.decodedBodySize || e.transferSize || 0)}MB/${(e.duration / 1000).toFixed(1)}s`);
+  const tick = () => {
+    const sec = ((performance.now() - t0) / 1000).toFixed(0), fin = done();
+    probe.loadTrace = { tag, sec: +sec, lastProg, finished: fin };
+    msg(`加载 ${tag} · 已用 ${sec}s · 最后进度：${lastProg} · 已完成：${fin.join('，') || '无'}`);
+  };
+  tick(); const id = setInterval(tick, 1000);
+  return () => clearInterval(id);
 }
 // 资源连通性：每个资源取首字节（Range 0-0），记状态码与耗时——定位是 CDN / github.io / 具体文件不通
 const RESOURCES = [
@@ -222,8 +237,9 @@ $('btnBench').onclick = async () => {
     for (const c of configs) {
       let model = null, t0 = performance.now(), loadMs;
       try {
-        msg(`加载 ${c.device}/${c.dtype}（从本站加载模型，约 ${c.dtype === 'fp16' ? 50 : 27}MB）…`);
-        model = await AutoModel.from_pretrained(MODEL_ID, { device: c.device, dtype: c.dtype, progress_callback: progressCb(`${c.device}/${c.dtype}`) });
+        const stop = loadHeartbeat(`${c.device}/${c.dtype}`);
+        try { model = await AutoModel.from_pretrained(MODEL_ID, { device: c.device, dtype: c.dtype, progress_callback: progressCb() }); }
+        finally { stop(); }
         loadMs = performance.now() - t0;
       } catch (err) {
         const [W, H] = inputDims(SHORT_SIDES[0]);
@@ -277,8 +293,9 @@ $('btnLive').onclick = async () => {
   busy = true; liveOn = true; $('btnLive').textContent = '■ 停止实时深度';
   let model;
   try {
-    msg(`加载 ${r.device}/${r.dtype}…`);
-    model = await AutoModel.from_pretrained(MODEL_ID, { device: r.device, dtype: r.dtype, progress_callback: progressCb(`${r.device}/${r.dtype}`) });
+    const stop = loadHeartbeat(`${r.device}/${r.dtype}`);
+    try { model = await AutoModel.from_pretrained(MODEL_ID, { device: r.device, dtype: r.dtype, progress_callback: progressCb() }); }
+    finally { stop(); }
     const t0 = performance.now(); let n = 0;
     while (liveOn) {
       const { d, data } = await infer(model, r.W, r.H);
@@ -294,7 +311,7 @@ $('btnLive').onclick = async () => {
 };
 
 $('btnCopy').onclick = async () => {
-  const txt = JSON.stringify({ env: probe.env, net: probe.net, verdict: probe.verdict, bench: probe.bench, live: probe.live }, null, 1);
+  const txt = JSON.stringify({ env: probe.env, net: probe.net, loadTrace: probe.loadTrace, verdict: probe.verdict, bench: probe.bench, live: probe.live }, null, 1);
   try { await navigator.clipboard.writeText(txt); msg('结果已复制，粘贴发回即可'); }
   catch { prompt('复制下列结果：', txt); }
 };
