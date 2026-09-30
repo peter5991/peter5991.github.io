@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex">
+<link rel="icon" href="data:,">
+<title>A1 · WebXR 诊断（ARCore 能力探针）</title>
+<style>
+:root{--void:#000;--bone:#fff;--ash:#9a9a9a;--iris:#8052ff;--saffron:#ffb829;--verdant:#2ee6a8;--red:#ff5a5a}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--void);color:var(--bone);font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;-webkit-font-smoothing:antialiased;min-height:100vh;display:flex;flex-direction:column}
+header{padding:14px 16px 10px;display:flex;align-items:baseline;justify-content:space-between}
+h1{font-size:16px;font-weight:700}
+header a{font-size:12px;color:var(--ash)}
+#verdict{margin:12px 16px 0;padding:12px;border:1px solid #222;border-radius:12px;font-size:14px;font-weight:600;line-height:1.7}
+#guide{margin:12px 16px 0;padding:14px;border:1px solid var(--iris);border-radius:12px;font-size:15px;line-height:2}
+#guide b{color:var(--saffron)}
+#controls{display:flex;gap:10px;padding:12px 16px;flex-wrap:wrap}
+button{flex:1 1 40%;background:#161616;color:var(--bone);border:1px solid #2c2c2c;border-radius:12px;padding:12px 8px;font-size:13px;font-weight:600;font-family:inherit}
+button:active{border-color:var(--iris)}
+button.primary{background:var(--iris);border-color:var(--iris)}
+button:disabled{opacity:.4}
+button.probe{flex:1 1 28%;padding:9px 4px;font-size:12px}
+#msg{padding:0 16px 10px;font-size:12px;color:var(--ash);line-height:1.7}
+#msg.err{color:var(--red)}
+section{padding:0 16px 12px}
+h2{font-size:13px;color:var(--ash);font-weight:600;margin:6px 0}
+table{width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}
+td,th{border-bottom:1px solid #1c1c1c;padding:6px 4px;text-align:left;vertical-align:top}
+th{color:var(--ash);font-weight:500;white-space:nowrap}
+.good{color:var(--verdant)}.warn{color:var(--saffron)}.bad{color:var(--red)}
+input[type=text]{background:#161616;border:1px solid #2c2c2c;border-radius:8px;color:var(--bone);padding:8px;font-size:13px;width:100%;font-family:inherit}
+footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-height:1.6}
+</style>
+</head>
+<body>
+<header>
+  <h1>A1 · WebXR 诊断（ARCore 能力探针）</h1>
+  <a href="/ar-slam/">← 测试中心</a>
+</header>
+
+<div id="verdict">未测试 · 进入 AR 前请先读下方操作脚本</div>
+
+<div id="guide">
+  <b>操作脚本（进入 AR 后照做，约 1 分钟）：</b><br>
+  ① 镜头对准桌面/地面，<b>缓慢移动</b>手机扫 40 秒<br>
+  ② 屏幕震动了 = hit-test 有命中（重要信号）<br>
+  ③ <b>点屏幕一次</b>放测试锚点 → 走开 2~3 米回看方块是否钉住<br>
+  ④ 按<b>返回键</b>退出 → 报告自动显示 → 点"复制结果"发回
+</div>
+
+<div id="controls">
+  <button id="btnEnter" class="primary">① 进入 AR（基线诊断）</button>
+  <button id="btnCopy">复制结果</button>
+</div>
+<div id="controls">
+  <button class="probe" data-feat="plane-detection">plane-detection</button>
+  <button class="probe" data-feat="camera-access">camera-access</button>
+  <button class="probe" data-feat="depth-sensing">depth-sensing</button>
+  <button class="probe" data-feat="image-tracking">image-tracking</button>
+  <button class="probe" data-feat="dom-overlay">dom-overlay</button>
+  <button class="probe" id="btnBaseline">官方基线 ↗</button>
+</div>
+<div id="msg">② 进阶探测：基线退出后<b>逐个点击</b>上方按钮（每个会重开一次会话，约 3 秒；某一项卡住 10 秒不动 = 该 feature 把浏览器挂起，刷新页面再测其余项）</div>
+
+<section><h2>环境</h2>
+  <table id="envTb"></table>
+  <p style="font-size:12px;color:var(--ash);margin:8px 0 4px">ARCore 版本（手机：设置→应用→Google Play Services for AR→版本号，手填）：</p>
+  <input type="text" id="arcoreVer" placeholder="例如 1.47.243190293（不知道就留空）">
+</section>
+<section><h2>会话与参考空间（基线）</h2><table id="sessTb"><tbody><tr><td>未运行</td></tr></tbody></table></section>
+<section><h2>追踪健康度</h2><table id="trackTb"><tbody><tr><td>未运行</td></tr></tbody></table></section>
+<section><h2>hit-test（零命中 = ARCore 平面检测残缺的核心证据）</h2><table id="hitTb"><tbody><tr><td>未运行</td></tr></tbody></table></section>
+<section><h2>锚点（点屏放置后每帧跟踪）</h2><table id="anchorTb"><tbody><tr><td>未运行</td></tr></tbody></table></section>
+<section><h2>进阶 feature 探测</h2><table id="probeTb"><tbody><tr><td>未运行</td></tr></tbody></table></section>
+
+<footer>判定表：hit-test 有命中→修 WebXR 版不走图卡 ｜ 追踪稳但无命中→图卡+ARCore 世界追踪 ｜ 追踪不稳→图卡+陀螺仪<br>对照基线：同机跑官方 hit-test 示例排除自写代码问题 ｜ 结果 window.__diag ｜ 真机缓存破解 ?v=&lt;commit&gt;</footer>
+
+<script type="module">
+const $ = id => document.getElementById(id);
+const diag = window.__diag = { page: 'xr-diag v1', time: new Date().toISOString(), errors: [], probes: {} };
+function msg(t, err) { $('msg').innerHTML = t; $('msg').className = err ? 'err' : ''; }
+function logErr(t) { diag.errors.push(t); console.error('[diag]', t); }
+window.addEventListener('error', e => logErr('全局错误: ' + e.message));
+window.addEventListener('unhandledrejection', e => logErr('未捕获 rejection: ' + (e.reason && (e.reason.name + ':' + e.reason.message) || e.reason)));
+
+// ---------- 环境探测（无需会话） ----------
+async function probeEnv() {
+  const e = diag.env = {};
+  e.ua = navigator.userAgent;
+  e.secureContext = !!self.isSecureContext;
+  e.cores = navigator.hardwareConcurrency ?? '?';
+  e.xrExists = !!navigator.xr;
+  if (navigator.xr) {
+    for (const mode of ['immersive-ar', 'immersive-vr', 'inline']) {
+      try { e['support_' + mode] = await navigator.xr.isSessionSupported(mode); }
+      catch (err) { e['support_' + mode] = 'throw: ' + err.message; }
+    }
+  }
+  const rows = [
+    ['HTTPS 安全上下文', e.secureContext ? '<span class="good">是</span>' : '<span class="bad">否（WebXR 硬性拒绝）</span>'],
+    ['navigator.xr', e.xrExists ? '<span class="good">存在</span>' : '<span class="bad">不存在</span>'],
+    ['immersive-ar', e.support_immersive_ar === true ? '<span class="good">支持</span>' : `<span class="bad">${e.support_immersive_ar ?? '-'}</span>`],
+    ['immersive-vr / inline', `${e['support_immersive-vr'] ?? '-'} / ${e['support_inline'] ?? '-'}`],
+    ['CPU 核', e.cores],
+    ['UA', `<span style="font-size:10px;word-break:break-all">${e.ua}</span>`],
+  ];
+  $('envTb').innerHTML = rows.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('');
+  if (e.support_immersive_ar !== true) {
+    $('verdict').innerHTML = '<span class="bad">✗ 本机不支持 immersive-ar——诊断只能跑环境段。桌面 Chrome 属预期；真机见此=大问题</span>';
+    $('btnEnter').disabled = true;
+    document.querySelectorAll('button.probe[data-feat]').forEach(b => b.disabled = true);
+  }
+}
+
+// ---------- 最小 WebGL 渲染（命中圈 + 锚点方块；故意不用 three.js——它的参考空间管理是 W2 嫌疑变量） ----------
+const cv = document.createElement('canvas');
+const gl = cv.getContext('webgl', { alpha: true, xrCompatible: true });
+let prog = null, aPos = -1, uMVP = null, uColor = null, cubeBuf = null;
+function initGL() {
+  if (prog) return;
+  const vs = gl.createShader(gl.VERTEX_SHADER);
+  gl.shaderSource(vs, 'attribute vec3 p;uniform mat4 mvp;void main(){gl_Position=mvp*vec4(p,1.0);}');
+  gl.compileShader(vs);
+  const fs = gl.createShader(gl.FRAGMENT_SHADER);
+  gl.shaderSource(fs, 'precision mediump float;uniform vec4 c;void main(){gl_FragColor=c;}');
+  gl.compileShader(fs);
+  prog = gl.createProgram();
+  gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { logErr('GL link 失败: ' + gl.getProgramInfoLog(prog)); prog = null; return; }
+  aPos = gl.getAttribLocation(prog, 'p'); uMVP = gl.getUniformLocation(prog, 'mvp'); uColor = gl.getUniformLocation(prog, 'c');
+  // 单位立方体（中心原点，边长 1），12 三角面
+  const v = [];
+  const q = (a, b, c, d) => { v.push(...a, ...b, ...c, ...a, ...c, ...d); };
+  const P = [[-.5,-.5,-.5],[.5,-.5,-.5],[.5,.5,-.5],[-.5,.5,-.5],[-.5,-.5,.5],[.5,-.5,.5],[.5,.5,.5],[-.5,.5,.5]];
+  q(P[0],P[1],P[2],P[3]); q(P[5],P[4],P[7],P[6]); q(P[4],P[0],P[3],P[7]); q(P[1],P[5],P[6],P[2]); q(P[3],P[2],P[6],P[7]); q(P[4],P[5],P[1],P[0]);
+  cubeBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, cubeBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.STATIC_DRAW);
+  gl.enable(gl.DEPTH_TEST);
+}
+// mat4 列主序工具
+function m4mul(a, b) {
+  const o = new Float32Array(16);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++)
+    o[c*4+r] = a[r]*b[c*4] + a[4+r]*b[c*4+1] + a[8+r]*b[c*4+2] + a[12+r]*b[c*4+3];
+  return o;
+}
+function m4ts(x, y, z, sx, sy, sz) {
+  return new Float32Array([sx,0,0,0, 0,sy,0,0, 0,0,sz,0, x,y,z,1]);
+}
+function drawMarker(view, model, color) {
+  const mvp = m4mul(view.projectionMatrix, m4mul(view.transform.inverse.matrix, model));
+  gl.uniformMatrix4fv(uMVP, false, mvp);
+  gl.uniform4fv(uColor, color);
+  gl.drawArrays(gl.TRIANGLES, 0, 36);
+}
+function renderFrame(session, frame, pose, hitPose, anchorPose) {
+  const layer = session.renderState.baseLayer;
+  if (!layer || !pose) return;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.useProgram(prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, cubeBuf);
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+  for (const view of pose.views) {
+    const vp = layer.getViewport(view);
+    gl.viewport(vp.x, vp.y, vp.width, vp.height);
+    if (hitPose) { // 命中圈=压扁方块
+      const m = hitPose.transform.matrix;
+      drawMarker(view, m4mul(new Float32Array(m), m4ts(0, 0, 0, 0.2, 0.005, 0.2)), [0.3, 1, 0.5, 0.9]);
+    }
+    if (anchorPose) { // 锚点方块 10cm
+      const m = anchorPose.transform.matrix;
+      drawMarker(view, m4mul(new Float32Array(m), m4ts(0, 0.05, 0, 0.1, 0.1, 0.1)), [1, 0.72, 0.16, 1]);
+    }
+  }
+}
+
+// ---------- 会话通用 ----------
+let session = null, entering = false, baselineDone = false;
+const timeout = ms => new Promise((_, rej) => setTimeout(() => rej(new Error('TIMEOUT')), ms));
+async function endSession() { if (session) { const s = session; session = null; try { await s.end(); } catch {} } }
+async function attachGL(s) {
+  initGL();
+  if (!prog) throw new Error('WebGL 初始化失败');
+  await gl.makeXRCompatible();
+  s.updateRenderState({ baseLayer: new XRWebGLLayer(s, gl) });
+}
+
+// ---------- 基线会话（W2 已知能开的配置；指标全程内存记录，退出后渲染报告） ----------
+const B = diag.baseline = {
+  requested: { required: ['hit-test'], optional: ['anchors'] },
+  enabledFeatures: null, refSpaces: {},
+  hitSources: {},   // plane / point / pointplane / transient
+  tracking: { frames: 0, poseNull: 0, emulated: 0, jumpPos: 0, jumpRot: 0, losses: 0, nullStreakMax: 0 },
+  anchor: { created: false },
+};
+for (const key of ['plane', 'point', 'pointplane', 'transient'])
+  B.hitSources[key] = { status: '未请求', firstHitSec: null, framesWithHit: 0, totalHits: 0 };
+
+let refSpace = null, viewerSpace = null, htSources = {}, transientSrc = null;
+let anchor = null, anchorFirstPos = null;
+let prevPos = null, prevQuat = null, nullStreak = 0, t0Baseline = 0;
+const vib = ms => { try { navigator.vibrate?.(ms); } catch {} };
+
+async function enterBaseline() {
+  if (entering || session) return;
+  entering = true; $('btnEnter').disabled = true;
+  try {
+    session = await navigator.xr.requestSession('immersive-ar', {
+      requiredFeatures: B.requested.required, optionalFeatures: B.requested.optional,
+    });
+  } catch (e) {
+    msg('进入 AR 失败: ' + e.name + ': ' + e.message, true); logErr('requestSession: ' + e.name + ': ' + e.message);
+    entering = false; $('btnEnter').disabled = false; return;
+  }
+  B.enabledFeatures = [...session.enabledFeatures];
+  // 参考空间逐个探测（W2 实锤：local-floor 不支持且 three.js 默认它会黑屏）
+  for (const type of ['local', 'local-floor', 'unbounded', 'viewer']) {
+    try {
+      const sp = await session.requestReferenceSpace(type);
+      B.refSpaces[type] = 'OK';
+      if (type === 'local') refSpace = sp;
+      if (type === 'viewer') viewerSpace = sp;
+    } catch (e) { B.refSpaces[type] = e.name; }
+  }
+  if (!refSpace || !viewerSpace) {
+    msg('local/viewer 参考空间缺失，无法继续: ' + JSON.stringify(B.refSpaces), true);
+    await endSession(); entering = false; $('btnEnter').disabled = false; return;
+  }
+  await attachGL(session);
+  // hit-test 三路并行：区分"平面检测坏"（point 有命中 plane 无）与"ARCore 全残"（全无）
+  const cfgs = { plane: ['plane'], point: ['point'], pointplane: ['point', 'plane'] };
+  for (const [key, entityTypes] of Object.entries(cfgs)) {
+    try {
+      htSources[key] = await session.requestHitTestSource({ space: viewerSpace, entityTypes });
+      B.hitSources[key].status = 'OK entityTypes=' + JSON.stringify(entityTypes);
+    } catch (e) { B.hitSources[key].status = '请求失败: ' + e.name; }
+  }
+  try {
+    transientSrc = await session.requestHitTestSourceForTransientInput({ profile: 'generic-touchscreen', entityTypes: ['point', 'plane'] });
+    B.hitSources.transient.status = 'OK（点屏射线）';
+  } catch (e) { B.hitSources.transient.status = '请求失败: ' + e.name; }
+
+  session.addEventListener('select', onSelect);
+  session.addEventListener('end', () => {
+    session = null; htSources = {}; transientSrc = null;
+    if (!baselineDone) { baselineDone = true; renderReport(); }
+    $('btnEnter').disabled = false;
+    msg('会话已结束。报告在下方，点"复制结果"发回；进阶探测可逐个点击。');
+  });
+  t0Baseline = performance.now();
+  session.requestAnimationFrame(onBaselineFrame);
+  entering = false;
+  msg('会话已启动。enabledFeatures = ' + B.enabledFeatures.join(', ') + '。照脚本做，做完按返回键退出。');
+}
+$('btnEnter').addEventListener('click', enterBaseline);
+
+function onSelect(e) {
+  const frame = e.frame;
+  // transient hit-test 对照（点屏瞬间的射线命中）
+  if (transientSrc) {
+    try {
+      const res = frame.getHitTestResultsForTransientInput(transientSrc);
+      const rec = B.hitSources.transient;
+      if (res.length && res[0].results.length) {
+        rec.totalHits += res[0].results.length; rec.framesWithHit++;
+        if (rec.firstHitSec == null) { rec.firstHitSec = +((performance.now() - t0Baseline) / 1000).toFixed(1); vib(100); }
+      }
+    } catch (err) { B.hitSources.transient.status = '读取出错: ' + err.name; }
+  }
+  // 锚点：优先 hit 命中点，无命中退化为镜头前 1.2m/下 1m（W2 同款兜底，漂移对照实验）
+  const vp = frame.getViewerPose(refSpace);
+  if (!vp || anchor) return;
+  let poseMat = null, via = 'fallback';
+  for (const key of ['pointplane', 'plane', 'point']) {
+    if (!htSources[key]) continue;
+    const hits = frame.getHitTestResults(htSources[key]);
+    if (hits.length) { const p = hits[0].getPose(refSpace); if (p) { poseMat = p.transform.matrix; via = 'hit:' + key; break; } }
+  }
+  if (!poseMat) {
+    const t = vp.transform;
+    const fwd = { x: -t.matrix[8], z: -t.matrix[10] }; // -Z 前向的水平分量
+    const len = Math.hypot(fwd.x, fwd.z) || 1;
+    poseMat = m4ts(t.position.x + fwd.x / len * 1.2, t.position.y - 1.0, t.position.z + fwd.z / len * 1.2, 1, 1, 1);
+  }
+  B.anchor.placedVia = via;
+  if (session.enabledFeatures.includes('anchors')) {
+    const xf = new XRRigidTransform({ x: poseMat[12], y: poseMat[13], z: poseMat[14] });
+    frame.createAnchor(xf, refSpace)
+      .then(a => { anchor = a; anchorFirstPos = null; B.anchor.created = true; B.anchor.createdVia = via; vib(120); })
+      .catch(err => { B.anchor.created = false; B.anchor.createErr = err.name + ': ' + err.message; });
+  } else {
+    B.anchor.created = false; B.anchor.createErr = 'anchors 未授予（enabledFeatures 无此项）';
+  }
+}
+
+function onBaselineFrame(t, frame) {
+  const s = frame.session;
+  if (s !== session) return;
+  s.requestAnimationFrame(onBaselineFrame);
+  const T = B.tracking;
+  T.frames++;
+  const pose = frame.getViewerPose(refSpace);
+  if (!pose) {
+    T.poseNull++;
+    if (++nullStreak > T.nullStreakMax) T.nullStreakMax = nullStreak;
+    if (nullStreak === 10) T.losses++; // 连续 10 帧无位姿 = 计一次追踪丢失
+    return;
+  }
+  nullStreak = 0;
+  if (pose.emulatedPosition) T.emulated++;
+  const p = pose.transform.position, q = pose.transform.orientation;
+  if (prevPos) {
+    const d = Math.hypot(p.x - prevPos.x, p.y - prevPos.y, p.z - prevPos.z);
+    if (d > 0.05) T.jumpPos++;
+    const dot = Math.abs(q.x*prevQuat.x + q.y*prevQuat.y + q.z*prevQuat.z + q.w*prevQuat.w);
+    if (2 * Math.acos(Math.min(1, dot)) > 5 * Math.PI / 180) T.jumpRot++;
+  }
+  prevPos = { x: p.x, y: p.y, z: p.z }; prevQuat = { x: q.x, y: q.y, z: q.z, w: q.w };
+  // hit-test 三路
+  let hitPose = null;
+  for (const key of ['plane', 'point', 'pointplane']) {
+    if (!htSources[key]) continue;
+    let hits = [];
+    try { hits = frame.getHitTestResults(htSources[key]); } catch {}
+    const rec = B.hitSources[key];
+    if (hits.length) {
+      rec.totalHits += hits.length; rec.framesWithHit++;
+      if (rec.firstHitSec == null) { rec.firstHitSec = +((performance.now() - t0Baseline) / 1000).toFixed(1); vib(80); }
+      if (key === 'pointplane' && !hitPose) hitPose = hits[0].getPose(refSpace);
+    }
+  }
+  // 锚点跟踪：漂移 = 相对首个有效位姿的距离
+  let anchorPose = null;
+  if (anchor) {
+    const A = B.anchor;
+    A.framesTotal = (A.framesTotal || 0) + 1;
+    const inSet = frame.trackedAnchors ? frame.trackedAnchors.has(anchor) : true;
+    if (!inSet) A.missingFromSet = (A.missingFromSet || 0) + 1;
+    try { anchorPose = frame.getPose(anchor.anchorSpace, refSpace); } catch {}
+    if (anchorPose) {
+      A.framesUpdated = (A.framesUpdated || 0) + 1;
+      const ap = anchorPose.transform.position;
+      if (!anchorFirstPos) anchorFirstPos = { x: ap.x, y: ap.y, z: ap.z };
+      const drift = Math.hypot(ap.x - anchorFirstPos.x, ap.y - anchorFirstPos.y, ap.z - anchorFirstPos.z) * 100;
+      A.driftCm = +drift.toFixed(1);
+      if (A.maxDriftCm == null || drift > A.maxDriftCm) A.maxDriftCm = A.driftCm;
+    } else A.poseNull = (A.poseNull || 0) + 1;
+  }
+  try { renderFrame(s, frame, pose, hitPose, anchorPose); } catch (e) { if (!B.renderErr) { B.renderErr = e.message; logErr('渲染: ' + e.message); } }
+}
+
+// ---------- 进阶 feature 逐个探测（每个独立开新会话；10s 看门狗判挂起） ----------
+async function collectFrames(s, durMs, cb) {
+  return new Promise(res => {
+    const t0 = performance.now();
+    const done = () => res();
+    s.addEventListener('end', done, { once: true });
+    (function fr(t, frame) {
+      if (s !== session) { res(); return; }
+      try { cb(frame); } catch {}
+      if (performance.now() - t0 < durMs) s.requestAnimationFrame(fr); else { s.removeEventListener('end', done); res(); }
+    })(0, null);
+  });
+}
+// 首次 cb 调用 frame 为 null（占位），内部需判空
+async function probeFeature(feat, btn) {
+  if (session || entering) { msg('请先退出当前会话再探测', true); return; }
+  btn.disabled = true;
+  const rec = diag.probes[feat] = { status: '运行中' };
+  msg(`探测 ${feat}：正在请求会话（10s 无响应=挂起）…`);
+  const init = { requiredFeatures: ['hit-test'], optionalFeatures: ['anchors', feat] };
+  try {
+    if (feat === 'dom-overlay') init.domOverlay = { root: document.body };
+    if (feat === 'depth-sensing') init.depthSensing = { usagePreference: ['gpu-optimized', 'cpu-optimized'], dataFormatPreference: ['luminance-alpha', 'float32'] };
+    if (feat === 'image-tracking') { // 需 trackedImages 才可能授予；生成合成图探授予与否
+      const c = document.createElement('canvas'); c.width = c.height = 128;
+      const x = c.getContext('2d');
+      x.fillStyle = '#fff'; x.fillRect(0, 0, 128, 128); x.fillStyle = '#000';
+      for (let i = 0; i < 8; i++) for (let j = 0; j < 8; j++) if ((i + j) % 2) x.fillRect(i * 16, j * 16, 16, 16);
+      x.fillStyle = '#e33'; x.beginPath(); x.arc(64, 64, 20, 0, 7); x.fill();
+      init.trackedImages = [{ image: await createImageBitmap(c), widthInMeters: 0.2 }];
+    }
+  } catch (e) { rec.status = '准备失败: ' + e.message; btn.disabled = false; renderProbes(); return; }
+  const t0 = performance.now();
+  try {
+    session = await Promise.race([navigator.xr.requestSession('immersive-ar', init), timeout(10000)]);
+  } catch (e) {
+    rec.status = e.message === 'TIMEOUT' ? '挂起（10s 无响应）' : '拒绝: ' + e.name;
+    rec.ms = Math.round(performance.now() - t0);
+    if (rec.status.startsWith('挂起')) { rec.note = '该 feature 致 requestSession 挂起；建议刷新页面再测其余项（后续结果可能不可信）'; }
+    session = null; btn.disabled = false; renderProbes();
+    msg(`${feat}：${rec.status}`, true); return;
+  }
+  rec.ms = Math.round(performance.now() - t0);
+  rec.granted = session.enabledFeatures.includes(feat);
+  session.addEventListener('end', () => { session = null; });
+  if (!rec.granted) {
+    rec.status = '会话可开但未授予（enabledFeatures 无此项）';
+    rec.enabledFeatures = [...session.enabledFeatures];
+  } else {
+    rec.status = '已授予';
+    // 授予后采 3 秒帧数据
+    try {
+      await attachGL(session);
+      const d = rec.data = { frames: 0 };
+      if (feat === 'plane-detection') { d.maxPlanes = 0; d.orientations = {}; }
+      if (feat === 'camera-access') d.cameraFrames = 0;
+      if (feat === 'depth-sensing') d.depthOk = 0;
+      if (feat === 'image-tracking') d.maxResults = 0;
+      await collectFrames(session, 3000, frame => {
+        if (!frame) return;
+        d.frames++;
+        try {
+          if (feat === 'plane-detection' && frame.detectedPlanes) {
+            d.maxPlanes = Math.max(d.maxPlanes, frame.detectedPlanes.size);
+            frame.detectedPlanes.forEach(p => { d.orientations[p.orientation] = (d.orientations[p.orientation] || 0) + 1; });
+          }
+          if (feat === 'camera-access' && frame.camera) d.cameraFrames++;
+          if (feat === 'image-tracking' && frame.getImageTrackingResults) {
+            const r = frame.getImageTrackingResults();
+            d.maxResults = Math.max(d.maxResults, r.length);
+          }
+        } catch {}
+      });
+      if (feat === 'depth-sensing') { // 需要 view 对象，单独一轮
+        const sp = await session.requestReferenceSpace('viewer').catch(() => null);
+        if (sp) await collectFrames(session, 1500, frame => {
+          if (!frame) return;
+          const pose = frame.getViewerPose(sp);
+          if (pose && pose.views.length) {
+            try { const info = frame.getDepthInformation(pose.views[0]); if (info) { d.depthOk++; d.depthSize = info.width + '×' + info.height; } } catch {}
+          }
+        });
+      }
+    } catch (e) { rec.dataErr = e.message; }
+  }
+  await endSession();
+  btn.disabled = false;
+  renderProbes();
+  msg(`${feat}：${rec.status}${rec.granted ? '，采样完成' : ''}`);
+}
+document.querySelectorAll('button.probe[data-feat]').forEach(b =>
+  b.addEventListener('click', () => probeFeature(b.dataset.feat, b)));
+$('btnBaseline').addEventListener('click', () =>
+  window.open('https://immersive-web.github.io/webxr-samples/hit-test.html', '_blank'));
+
+// ---------- 报告渲染 + 初判 ----------
+function cls(v, good, warn) { return `<span class="${v === good ? 'good' : v === warn ? 'warn' : ''}">${v}</span>`; }
+function renderReport() {
+  diag.arcoreVersion = $('arcoreVer').value.trim() || null;
+  diag.durationSec = +((performance.now() - t0Baseline) / 1000).toFixed(1);
+  const B_ = B, T = B_.tracking;
+  $('sessTb').innerHTML = [
+    ['请求 features', `required=${JSON.stringify(B_.requested.required)} optional=${JSON.stringify(B_.requested.optional)}`],
+    ['实际 enabledFeatures', B_.enabledFeatures ? B_.enabledFeatures.join(', ') : '-'],
+    ...Object.entries(B_.refSpaces).map(([k, v]) => [`参考空间 ${k}`, v === 'OK' ? `<span class="good">OK</span>` : `<span class="bad">${v}</span>`]),
+  ].map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('');
+  const fps = diag.durationSec > 0 ? (T.frames / diag.durationSec).toFixed(1) : '-';
+  $('trackTb').innerHTML = [
+    ['XR 帧数 / 时长 / fps', `${T.frames} / ${diag.durationSec}s / ${fps}`],
+    ['viewerPose 缺失', `${T.poseNull} 帧（${T.frames ? (100 * T.poseNull / T.frames).toFixed(1) : 0}%），最长连续 ${T.nullStreakMax}`],
+    ['emulatedPosition', T.emulated + ' 帧'],
+    ['位姿跳变 >5cm', T.jumpPos + ' 次'],
+    ['朝向跳变 >5°', T.jumpRot + ' 次'],
+    ['追踪丢失（≥10 连帧无位姿）', T.losses + ' 次'],
+  ].map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('');
+  $('hitTb').innerHTML = Object.entries(B_.hitSources).map(([k, r]) =>
+    `<tr><th>${k}</th><td>${r.status}</td><td>${r.totalHits ? `<span class="good">命中 ${r.totalHits} 次 / ${r.framesWithHit} 帧，首命中 ${r.firstHitSec}s</span>` : '<span class="bad">零命中</span>'}</td></tr>`).join('');
+  const A = B_.anchor;
+  $('anchorTb').innerHTML = [
+    ['放置方式', A.placedVia ?? '未放置'],
+    ['创建', A.created ? `<span class="good">成功（${A.createdVia}）</span>` : (A.createErr ?? '未尝试')],
+    ['位姿更新', A.framesUpdated != null ? `${A.framesUpdated}/${A.framesTotal} 帧` : '-'],
+    ['当前/最大漂移', A.driftCm != null ? `${A.driftCm}cm / ${A.maxDriftCm}cm` : '-'],
+  ].map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('');
+  // 初判（对应开发计划判定表）
+  const anyHit = Object.values(B_.hitSources).some(r => r.totalHits > 0);
+  const trackingOk = T.frames > 300 && T.poseNull / T.frames < 0.05 && (T.jumpPos + T.jumpRot) < T.frames * 0.02 && T.losses <= 2;
+  let verdict;
+  if (anyHit) verdict = '<span class="good">初判：hit-test 有命中 → 判定表第 1 行（旧代码/配置问题），可修 WebXR 版直接做空间放置</span>';
+  else if (trackingOk) verdict = '<span class="warn">初判：追踪连续但零命中 → 判定表第 2 行（ARCore 平面检测残缺，世界追踪可用）→ B：图卡 + ARCore 世界追踪</span>';
+  else verdict = '<span class="bad">初判：追踪本身不稳/数据不足 → 判定表第 3 行（图卡 + 陀螺仪）或重测（时长太短会误判）</span>';
+  $('verdict').innerHTML = verdict + `<br><span style="font-weight:400;font-size:12px;color:var(--ash)">初判是启发式，以人工核对日志为准 · ${diag.durationSec}s · 错误 ${diag.errors.length} 条</span>`;
+}
+function renderProbes() {
+  const rows = Object.entries(diag.probes).map(([k, r]) => {
+    const st = r.status.startsWith('已授予') ? `<span class="good">${r.status}</span>`
+      : (r.status.startsWith('挂起') || r.status.startsWith('拒绝')) ? `<span class="bad">${r.status}</span>` : r.status;
+    let detail = '';
+    if (r.ms != null) detail += r.ms + 'ms ';
+    if (r.data) detail += JSON.stringify(r.data);
+    if (r.note) detail += ' ⚠️' + r.note;
+    return `<tr><th>${k}</th><td>${st}</td><td style="word-break:break-all">${detail}</td></tr>`;
+  });
+  if (rows.length) $('probeTb').innerHTML = rows.join('');
+}
+
+$('btnCopy').addEventListener('click', async () => {
+  diag.arcoreVersion = $('arcoreVer').value.trim() || null;
+  const txt = JSON.stringify(diag, null, 1);
+  try { await navigator.clipboard.writeText(txt); msg('结果已复制，粘贴发回即可'); }
+  catch { prompt('复制下列结果：', txt); }
+});
+
+// ---------- 桌面自验（无 WebXR，纯数学真值） ----------
+window.__selftest = () => {
+  const out = [];
+  const t = (name, ok, detail) => out.push(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ' — ' + detail : ''}`);
+  const I = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+  const A = m4ts(1, 2, 3, 2, 2, 2);
+  t('T1 平移缩放矩阵', A[12] === 1 && A[13] === 2 && A[14] === 3 && A[0] === 2, JSON.stringify([...A]));
+  const IA = m4mul(I, A), AI = m4mul(A, I);
+  t('T2 单位阵左右乘', [...IA].every((v, i) => v === A[i]) && [...AI].every((v, i) => v === A[i]));
+  // 平移(1,0,0) ∘ 平移(0,1,0) = 平移(1,1,0)；列主序组合顺序 m4mul(a,b) 表示先 b 后 a
+  const C = m4mul(m4ts(1, 0, 0, 1, 1, 1), m4ts(0, 1, 0, 1, 1, 1));
+  t('T3 平移复合', C[12] === 1 && C[13] === 1 && C[14] === 0, `t=(${C[12]},${C[13]},${C[14]})`);
+  // 缩放 2 ∘ 平移(1,0,0)：点 (0,0,0) → 平移 →(1,0,0) → 缩放 →(2,0,0)
+  const D = m4mul(m4ts(0, 0, 0, 2, 2, 2), m4ts(1, 0, 0, 1, 1, 1));
+  t('T4 缩放∘平移作用于原点', D[12] === 2 && D[0] === 2, `x'=${D[12]}`);
+  return out;
+};
+
+probeEnv();
+</script>
+</body>
+</html>

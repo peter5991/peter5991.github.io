@@ -34,11 +34,17 @@ footer a{border-bottom:1px solid #333}
 </head>
 <body>
 <header>
-  <h1>AR SLAM 测试中心</h1>
-  <p class="sub">自研 WASM SLAM 里程碑真机测试入口（D1~D5）。目标设备：Reno14 系统浏览器；对照基准：Quest 3 WebXR。请用手机浏览器打开各测试项。</p>
+  <h1>AR 测试中心</h1>
+  <p class="sub">目标设备：Reno14 系统浏览器。🧊 #9 自研 WASM SLAM 已冻结（2026-09-30，D1~D4 卡片保留备查）；当前主线 = A1 WebXR 诊断 → B 图卡方案（见 docs/AR定位新路线-开发计划v1.md）。</p>
 </header>
 
 <main>
+  <a class="milestone" href="xr-diag.html">
+    <div class="row"><span class="name">A1 · WebXR 诊断（ARCore 能力探针）</span><span class="badge doing">待真机</span></div>
+    <p class="desc">新路线第一步：裸 WebXR 诊断页（故意不用 three.js——排除 W2 嫌疑变量）。基线会话记录追踪健康度 / 三路 hit-test（plane/point/混合）/ 锚点漂移；进阶 feature（plane-detection/camera-access/depth-sensing/image-tracking/dom-overlay）逐个独立会话探测 + 10s 挂起看门狗。退出会话后出报告，复制 JSON 发回。</p>
+    <p class="accept">真机跑出日志 JSON，归入判定表：有命中→修 WebXR 版 ｜ 追踪稳但无命中→图卡+ARCore 世界追踪 ｜ 追踪不稳→图卡+陀螺仪</p>
+  </a>
+
   <a class="milestone" href="d1-features.html">
     <div class="row"><span class="name">D1 · 特征追踪可视化</span><span class="badge done">已通过 ✓</span></div>
     <p class="desc">getUserMedia 降采样 VGA → FAST 角点 + LK 光流，特征点轨迹叠加显示。纯 JS 原型（jsfeat 解构起步）。桌面合成视频回放已验证：60fps、单帧处理 2.4~5ms、轨迹稳定。Reno14 真机验收通过（2026-09-28）。</p>
