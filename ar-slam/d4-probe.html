@@ -60,9 +60,15 @@ footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-heig
 <footer>模型：Depth Anything V2 Small（Apache-2.0，onnx-community ONNX 本地托管）· 运行时：transformers.js 4.3.0（jsDelivr）+ onnxruntime-web wasm（本地托管）· 结果 window.__probe</footer>
 
 <script type="module">
-import { AutoModel, Tensor, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0/dist/transformers.min.js';
-
 // transformers.js 走 CDN（本地托管会触发 GitHub 密钥扫描误报：压缩代码类名被识别为 Mistral Key）；模型 + ORT wasm 同源本地托管
+// 动态 import：CDN 不通时 Fail Loud（静态 import 失败=整页脚本静默不执行）
+const TF_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0/dist/transformers.min.js';
+let AutoModel, Tensor, env;
+try { ({ AutoModel, Tensor, env } = await import(TF_URL)); }
+catch (err) {
+  document.getElementById('verdict').innerHTML = '<span class="bad">✗ transformers.js（jsDelivr CDN）加载失败：' + err.message + '</span>';
+  throw err;
+}
 env.allowRemoteModels = false;
 env.allowLocalModels = true;
 env.localModelPath = new URL('./models/', location.href).href;
@@ -75,6 +81,38 @@ const $ = id => document.getElementById(id);
 const video = $('cam'), depthCv = $('depthCv');
 const probe = window.__probe = { env: {}, bench: [], live: null };
 let selIdx = -1, liveOn = false, busy = false;
+const MB = b => (b / 1048576).toFixed(1);
+// 下载进度：模型 27~50MB，移动网络下无进度=看似卡死
+function progressCb(tag) {
+  const t0 = performance.now();
+  return p => {
+    if (p.status !== 'progress' || !p.total) return;
+    const s = (performance.now() - t0) / 1000;
+    msg(`加载 ${tag}：${p.file} ${MB(p.loaded)}/${MB(p.total)}MB（${(p.loaded / p.total * 100).toFixed(0)}%，${MB(p.loaded / s)}MB/s）`);
+  };
+}
+// 资源连通性：每个资源取首字节（Range 0-0），记状态码与耗时——定位是 CDN / github.io / 具体文件不通
+const RESOURCES = [
+  ['transformers.js（jsDelivr）', TF_URL],
+  ['ORT wasm', './vendor/transformers/ort-wasm-simd-threaded.asyncify.wasm'],
+  ['模型 fp16', './models/depth-anything-v2-small/onnx/model_fp16.onnx'],
+  ['模型 q8', './models/depth-anything-v2-small/onnx/model_quantized.onnx'],
+];
+async function probeNet() {
+  probe.net = [];
+  for (const [name, url] of RESOURCES) {
+    const t = performance.now(), r = { name };
+    try {
+      const res = await fetch(url, { headers: { Range: 'bytes=0-0' }, cache: 'no-store' });
+      const total = (res.headers.get('content-range') || '').split('/')[1] || res.headers.get('content-length');
+      r.ok = res.ok; r.status = res.status; r.sizeMB = total ? +MB(+total) : null;
+    } catch (err) { r.ok = false; r.err = err.message; }
+    r.ms = Math.round(performance.now() - t);
+    probe.net.push(r);
+  }
+  $('envTb').insertAdjacentHTML('beforeend', probe.net.map(r =>
+    `<tr><th>${r.name}</th><td class="${r.ok ? 'good' : 'bad'}">${r.ok ? `可达 ${r.status} · ${r.sizeMB ?? '?'}MB · ${r.ms}ms` : `不可达 ${r.status ?? ''} ${r.err ?? ''}`}</td></tr>`).join(''));
+}
 
 function msg(t, err) { $('msg').textContent = t; $('msg').className = err ? 'err' : ''; }
 
@@ -184,8 +222,8 @@ $('btnBench').onclick = async () => {
     for (const c of configs) {
       let model = null, t0 = performance.now(), loadMs;
       try {
-        msg(`加载 ${c.device}/${c.dtype}（首次需下载模型，约 ${c.dtype === 'fp16' ? 50 : 27}MB）…`);
-        model = await AutoModel.from_pretrained(MODEL_ID, { device: c.device, dtype: c.dtype });
+        msg(`加载 ${c.device}/${c.dtype}（从本站加载模型，约 ${c.dtype === 'fp16' ? 50 : 27}MB）…`);
+        model = await AutoModel.from_pretrained(MODEL_ID, { device: c.device, dtype: c.dtype, progress_callback: progressCb(`${c.device}/${c.dtype}`) });
         loadMs = performance.now() - t0;
       } catch (err) {
         const [W, H] = inputDims(SHORT_SIDES[0]);
@@ -240,7 +278,7 @@ $('btnLive').onclick = async () => {
   let model;
   try {
     msg(`加载 ${r.device}/${r.dtype}…`);
-    model = await AutoModel.from_pretrained(MODEL_ID, { device: r.device, dtype: r.dtype });
+    model = await AutoModel.from_pretrained(MODEL_ID, { device: r.device, dtype: r.dtype, progress_callback: progressCb(`${r.device}/${r.dtype}`) });
     const t0 = performance.now(); let n = 0;
     while (liveOn) {
       const { d, data } = await infer(model, r.W, r.H);
@@ -256,12 +294,12 @@ $('btnLive').onclick = async () => {
 };
 
 $('btnCopy').onclick = async () => {
-  const txt = JSON.stringify({ env: probe.env, verdict: probe.verdict, bench: probe.bench, live: probe.live }, null, 1);
+  const txt = JSON.stringify({ env: probe.env, net: probe.net, verdict: probe.verdict, bench: probe.bench, live: probe.live }, null, 1);
   try { await navigator.clipboard.writeText(txt); msg('结果已复制，粘贴发回即可'); }
   catch { prompt('复制下列结果：', txt); }
 };
 
-probeEnv();
+probeEnv().then(probeNet);
 </script>
 </body>
 </html>
