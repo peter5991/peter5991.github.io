@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex">
+<link rel="icon" href="data:,">
+<title>D4-1 · ML 深度真机能力探针</title>
+<style>
+:root{--void:#000;--bone:#fff;--ash:#9a9a9a;--iris:#8052ff;--saffron:#ffb829;--verdant:#2ee6a8;--red:#ff5a5a}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--void);color:var(--bone);font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;-webkit-font-smoothing:antialiased;min-height:100vh;display:flex;flex-direction:column}
+header{padding:14px 16px 10px;display:flex;align-items:baseline;justify-content:space-between}
+h1{font-size:16px;font-weight:700}
+header a{font-size:12px;color:var(--ash)}
+#stage{display:flex;gap:6px;padding:0 16px;justify-content:center}
+#stage video,#stage canvas{width:calc(50% - 3px);max-height:40vh;object-fit:contain;background:#0a0a0a;border-radius:8px}
+#verdict{margin:12px 16px 0;padding:12px;border:1px solid #222;border-radius:12px;font-size:14px;font-weight:600;line-height:1.6}
+#controls{display:flex;gap:10px;padding:12px 16px;flex-wrap:wrap}
+button{flex:1 1 40%;background:#161616;color:var(--bone);border:1px solid #2c2c2c;border-radius:12px;padding:12px 8px;font-size:13px;font-weight:600;font-family:inherit}
+button:active{border-color:var(--iris)}
+button.primary{background:var(--iris);border-color:var(--iris)}
+button:disabled{opacity:.4}
+#msg{padding:0 16px 10px;font-size:12px;color:var(--ash);line-height:1.7}
+#msg.err{color:var(--red)}
+section{padding:0 16px 12px}
+h2{font-size:13px;color:var(--ash);font-weight:600;margin:6px 0}
+table{width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}
+td,th{border-bottom:1px solid #1c1c1c;padding:6px 4px;text-align:left}
+th{color:var(--ash);font-weight:500}
+tr.sel{outline:1px solid var(--verdant)}
+.good{color:var(--verdant)}.warn{color:var(--saffron)}.bad{color:var(--red)}
+footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-height:1.6}
+</style>
+</head>
+<body>
+<header>
+  <h1>D4-1 · ML 深度真机能力探针</h1>
+  <a href="/ar-slam/">← 测试中心</a>
+</header>
+
+<div id="stage">
+  <video id="cam" playsinline muted></video>
+  <canvas id="depthCv" width="4" height="3"></canvas>
+</div>
+<div id="verdict">未测试 · 门槛：Depth Anything V2 Small 最优配置 ≥1fps</div>
+<div id="controls">
+  <button id="btnCam">① 启动摄像头</button>
+  <button id="btnBench" class="primary">② 跑基准</button>
+  <button id="btnLive" disabled>③ 实时深度（选中配置）</button>
+  <button id="btnCopy">复制结果</button>
+</div>
+<div id="msg">基准约 1~3 分钟，期间保持页面前台。无摄像头也可跑（用合成图，帧率与画面内容无关）。点结果行可选中用于实时深度。</div>
+
+<section><h2>环境</h2><table id="envTb"></table></section>
+<section><h2>基准（推理耗时 = 输入张量 → 深度数据回到 CPU）</h2>
+  <table><thead><tr><th>后端</th><th>精度</th><th>输入</th><th>加载</th><th>首帧</th><th>中位</th><th>fps</th></tr></thead><tbody id="benchTb"></tbody></table>
+</section>
+
+<footer>模型：Depth Anything V2 Small（Apache-2.0，onnx-community ONNX 本地托管）· 运行时：transformers.js 4.3.0（jsDelivr）+ onnxruntime-web wasm（本地托管）· 结果 window.__probe</footer>
+
+<script type="module">
+import { AutoModel, Tensor, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0/dist/transformers.min.js';
+
+// transformers.js 走 CDN（本地托管会触发 GitHub 密钥扫描误报：压缩代码类名被识别为 Mistral Key）；模型 + ORT wasm 同源本地托管
+env.allowRemoteModels = false;
+env.allowLocalModels = true;
+env.localModelPath = new URL('./models/', location.href).href;
+env.backends.onnx.wasm.wasmPaths = new URL('./vendor/transformers/', location.href).href;
+
+const MODEL_ID = 'depth-anything-v2-small';
+const SHORT_SIDES = [252, 364, 518];     // 518=模型训练分辨率；均为 14 的倍数（ViT patch）
+const RUNS = 8, SKIP_MS = 4000;          // 小档位中位 >4s → 同后端更大档位跳过（不浪费真机时间）
+const $ = id => document.getElementById(id);
+const video = $('cam'), depthCv = $('depthCv');
+const probe = window.__probe = { env: {}, bench: [], live: null };
+let selIdx = -1, liveOn = false, busy = false;
+
+function msg(t, err) { $('msg').textContent = t; $('msg').className = err ? 'err' : ''; }
+
+// ---------- 环境 ----------
+async function probeEnv() {
+  const e = probe.env;
+  e.ua = navigator.userAgent;
+  e.cores = navigator.hardwareConcurrency ?? '?';
+  e.memGB = navigator.deviceMemory ?? '?';
+  // 无 COOP/COEP（GitHub Pages 不可设响应头）→ 无 SharedArrayBuffer → WASM 只能单线程
+  e.crossOriginIsolated = !!self.crossOriginIsolated;
+  e.webgpu = !!navigator.gpu;
+  if (navigator.gpu) {
+    try {
+      const ad = await navigator.gpu.requestAdapter();
+      if (!ad) e.webgpu = 'navigator.gpu 存在但 requestAdapter 返回 null';
+      else {
+        const info = ad.info || (ad.requestAdapterInfo ? await ad.requestAdapterInfo() : {});
+        e.gpu = [info.vendor, info.architecture, info.device, info.description].filter(Boolean).join(' / ') || '(未公开)';
+        e.shaderF16 = ad.features.has('shader-f16');
+        e.maxBufferMB = Math.round(ad.limits.maxBufferSize / 1048576);
+      }
+    } catch (err) { e.webgpu = 'requestAdapter 抛错: ' + err.message; }
+  }
+  const rows = [
+    ['WebGPU', e.webgpu === true ? '<span class="good">可用</span>' : `<span class="bad">${e.webgpu === false ? '不可用（无 navigator.gpu）' : e.webgpu}</span>`],
+    ['GPU', e.gpu ?? '-'], ['shader-f16', e.shaderF16 ?? '-'], ['maxBuffer', e.maxBufferMB ? e.maxBufferMB + 'MB' : '-'],
+    ['CPU 核 / 内存', `${e.cores} / ${e.memGB}GB`],
+    ['WASM 多线程', e.crossOriginIsolated ? '<span class="good">是</span>' : '<span class="warn">否（未跨源隔离→单线程）</span>'],
+    ['UA', `<span style="font-size:10px;word-break:break-all">${e.ua}</span>`],
+  ];
+  $('envTb').innerHTML = rows.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('');
+}
+
+// ---------- 摄像头（沿用 D3 基线：960 档=Reno14 超广角，resizeMode:none 禁裁切） ----------
+$('btnCam').onclick = async () => {
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ video: { resizeMode: 'none', facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false });
+    video.srcObject = s; await video.play();
+    msg(`摄像头 ${video.videoWidth}×${video.videoHeight}`);
+  } catch (err) { msg('摄像头打开失败：' + err.name + ' ' + err.message + '（基准仍可用合成图跑）', true); }
+};
+
+// ---------- 预处理：帧 → [1,3,H,W] 归一化张量（H/W 为 14 的倍数，按源宽高比） ----------
+const prepCv = document.createElement('canvas'), prepCx = prepCv.getContext('2d', { willReadFrequently: true });
+const MEAN = [0.485, 0.456, 0.406], STD = [0.229, 0.224, 0.225];
+function inputDims(short) {
+  const hasCam = video.videoWidth > 0;
+  const sw = hasCam ? video.videoWidth : 960, sh = hasCam ? video.videoHeight : 1280;  // 无摄像头按竖屏 3:4
+  const r = Math.max(sw, sh) / Math.min(sw, sh);
+  const long = Math.round(short * r / 14) * 14;
+  return sw >= sh ? [long, short] : [short, long];   // [W,H]
+}
+function makeInput(W, H) {
+  prepCv.width = W; prepCv.height = H;
+  if (video.videoWidth > 0) prepCx.drawImage(video, 0, 0, W, H);
+  else {   // 合成图：随机噪声（推理耗时与内容无关）
+    const id = prepCx.createImageData(W, H);
+    for (let i = 0; i < id.data.length; i++) id.data[i] = (i & 3) === 3 ? 255 : (Math.random() * 255) | 0;
+    prepCx.putImageData(id, 0, 0);
+  }
+  const px = prepCx.getImageData(0, 0, W, H).data, n = W * H, out = new Float32Array(3 * n);
+  for (let i = 0; i < n; i++) for (let c = 0; c < 3; c++) out[c * n + i] = (px[i * 4 + c] / 255 - MEAN[c]) / STD[c];
+  return new Tensor('float32', out, [1, 3, H, W]);
+}
+
+// ---------- 推理 ----------
+async function infer(model, W, H) {
+  const out = await model({ pixel_values: makeInput(W, H) });
+  const d = out.predicted_depth;
+  const data = d.data;             // 取 .data 强制回到 CPU（真实用法需要读深度）
+  return { d, data };
+}
+const median = a => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+
+function renderBench() {
+  $('benchTb').innerHTML = probe.bench.map((r, i) => {
+    const fpsCls = r.fps == null ? '' : r.fps >= 2 ? 'good' : r.fps >= 1 ? 'warn' : 'bad';
+    return `<tr data-i="${i}" class="${i === selIdx ? 'sel' : ''}"><td>${r.device}</td><td>${r.dtype}</td><td>${r.W}×${r.H}</td>` +
+      (r.err ? `<td colspan="4" class="bad">${r.err}</td>` :
+        `<td>${r.loadMs != null ? (r.loadMs / 1000).toFixed(1) + 's' : '-'}</td><td>${r.firstMs ?? '-'}ms</td><td>${r.medMs ?? '-'}ms</td><td class="${fpsCls}">${r.fps?.toFixed(2) ?? '-'}</td>`) + '</tr>';
+  }).join('');
+  $('benchTb').querySelectorAll('tr').forEach(tr => tr.onclick = () => {
+    const i = +tr.dataset.i; if (probe.bench[i].err || probe.bench[i].fps == null) return;
+    selIdx = i; $('btnLive').disabled = false; renderBench();
+  });
+}
+
+function renderVerdict() {
+  const ok = probe.bench.filter(r => r.fps != null);
+  if (!ok.length) { $('verdict').innerHTML = '<span class="bad">全部配置失败——见表格报错</span>'; return; }
+  const best = ok.reduce((a, b) => (b.fps > a.fps ? b : a));
+  const best518 = ok.filter(r => r.H === 518 || r.W === 518).sort((a, b) => b.fps - a.fps)[0];
+  const pass = best.fps >= 1;
+  $('verdict').innerHTML = `<span class="${pass ? 'good' : 'bad'}">${pass ? '✓ 门槛通过' : '✗ 门槛未过'}</span> · 最快 ${best.device}/${best.dtype} ${best.W}×${best.H} = ${best.fps.toFixed(2)}fps` +
+    (best518 ? `<br><span style="font-weight:400;font-size:12px;color:var(--ash)">训练分辨率 518 档最快：${best518.device}/${best518.dtype} ${best518.fps.toFixed(2)}fps</span>` : '');
+  probe.verdict = { pass, best: { device: best.device, dtype: best.dtype, W: best.W, H: best.H, fps: best.fps } };
+}
+
+$('btnBench').onclick = async () => {
+  if (busy) return; busy = true; liveOn = false;
+  $('btnBench').disabled = true; probe.bench = []; selIdx = -1;
+  const configs = [];
+  if (probe.env.webgpu === true) configs.push({ device: 'webgpu', dtype: 'fp16' });
+  configs.push({ device: 'wasm', dtype: 'q8' });   // CPU 路线：int8 量化（fp32 单线程过慢）
+  try {
+    for (const c of configs) {
+      let model = null, t0 = performance.now(), loadMs;
+      try {
+        msg(`加载 ${c.device}/${c.dtype}（首次需下载模型，约 ${c.dtype === 'fp16' ? 50 : 27}MB）…`);
+        model = await AutoModel.from_pretrained(MODEL_ID, { device: c.device, dtype: c.dtype });
+        loadMs = performance.now() - t0;
+      } catch (err) {
+        const [W, H] = inputDims(SHORT_SIDES[0]);
+        probe.bench.push({ ...c, W, H, err: '加载失败：' + err.message }); renderBench(); console.error(err); continue;
+      }
+      let skip = false;
+      for (const s of SHORT_SIDES) {
+        const [W, H] = inputDims(s), row = { ...c, W, H, loadMs };
+        loadMs = null;    // 加载耗时只记在该后端第一行
+        probe.bench.push(row);
+        if (skip) { row.err = `跳过（小档位已 >${SKIP_MS / 1000}s/帧）`; renderBench(); continue; }
+        try {
+          msg(`${c.device}/${c.dtype} ${W}×${H}：首帧（含着色器编译）…`); renderBench();
+          let t = performance.now(); await infer(model, W, H); row.firstMs = Math.round(performance.now() - t);
+          await infer(model, W, H);   // 第二次预热
+          const ts = [];
+          for (let i = 0; i < RUNS; i++) {
+            msg(`${c.device}/${c.dtype} ${W}×${H}：计时 ${i + 1}/${RUNS}`);
+            t = performance.now(); await infer(model, W, H); ts.push(performance.now() - t);
+          }
+          row.medMs = Math.round(median(ts)); row.fps = 1000 / median(ts);
+          row.runsMs = ts.map(Math.round);
+          if (row.medMs > SKIP_MS) skip = true;
+        } catch (err) { row.err = '推理失败：' + err.message; console.error(err); skip = true; }
+        renderBench();
+      }
+      try { await model.dispose(); } catch {}
+    }
+    renderVerdict();
+    msg('基准完成。点结果行选中配置 → ③ 实时深度（目视深度图是否合理：近亮远暗、地面呈平滑渐变）。然后点"复制结果"发回。');
+  } catch (err) { msg('基准异常：' + err.message, true); console.error(err); }
+  $('btnBench').disabled = false; busy = false;
+};
+
+// ---------- 实时深度：选中配置连续推理，显示深度图（亮=近）+ 实测 Hz ----------
+function drawDepth(data, W, H) {
+  let mn = Infinity, mx = -Infinity;
+  for (let i = 0; i < data.length; i++) { const v = data[i]; if (v < mn) mn = v; if (v > mx) mx = v; }
+  depthCv.width = W; depthCv.height = H;
+  const cx = depthCv.getContext('2d'), img = cx.createImageData(W, H), k = 255 / (mx - mn || 1);
+  for (let i = 0; i < data.length; i++) {
+    const g = (data[i] - mn) * k;
+    img.data[i * 4] = g; img.data[i * 4 + 1] = g * 0.8; img.data[i * 4 + 2] = 255 - g; img.data[i * 4 + 3] = 255;
+  }
+  cx.putImageData(img, 0, 0);
+}
+$('btnLive').onclick = async () => {
+  if (liveOn) { liveOn = false; return; }
+  if (busy || selIdx < 0) return;
+  const r = probe.bench[selIdx];
+  busy = true; liveOn = true; $('btnLive').textContent = '■ 停止实时深度';
+  let model;
+  try {
+    msg(`加载 ${r.device}/${r.dtype}…`);
+    model = await AutoModel.from_pretrained(MODEL_ID, { device: r.device, dtype: r.dtype });
+    const t0 = performance.now(); let n = 0;
+    while (liveOn) {
+      const { d, data } = await infer(model, r.W, r.H);
+      const [, h, w] = d.dims; drawDepth(data, w, h); n++;
+      const hz = n / ((performance.now() - t0) / 1000);
+      probe.live = { device: r.device, dtype: r.dtype, W: r.W, H: r.H, frames: n, hz: +hz.toFixed(2) };
+      msg(`实时深度 ${r.device}/${r.dtype} ${r.W}×${r.H} · 实测 ${hz.toFixed(2)}Hz（含预处理+显示）· ${n} 帧`);
+      await new Promise(res => requestAnimationFrame(res));
+    }
+  } catch (err) { msg('实时深度失败：' + err.message, true); console.error(err); }
+  try { await model?.dispose(); } catch {}
+  liveOn = false; busy = false; $('btnLive').textContent = '③ 实时深度（选中配置）';
+};
+
+$('btnCopy').onclick = async () => {
+  const txt = JSON.stringify({ env: probe.env, verdict: probe.verdict, bench: probe.bench, live: probe.live }, null, 1);
+  try { await navigator.clipboard.writeText(txt); msg('结果已复制，粘贴发回即可'); }
+  catch { prompt('复制下列结果：', txt); }
+};
+
+probeEnv();
+</script>
+</body>
+</html>

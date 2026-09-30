@@ -63,6 +63,12 @@ footer a{border-bottom:1px solid #333}
     <p class="accept">扫描出 ≥2 个平面（各色凸包+网格）；转身离开再转回区域不消失；方块走远 2~3m 回看钉住</p>
   </a>
 
+  <a class="milestone" href="d4-probe.html">
+    <div class="row"><span class="name">D4-1 · ML 深度真机能力探针</span><span class="badge doing">待真机测试</span></div>
+    <p class="desc">D3/D3.5 冻结，D4 本轮范围=ML 深度识别平面。门槛：Depth Anything V2 Small（本地托管）在本机浏览器 WebGPU / WASM 下各档位推理帧率；附实时深度图目视检查。桌面参照：WebGPU fp16 518 档 94ms，WASM 单线程 252 档 1.2s。</p>
+    <p class="accept">最优配置 ≥1fps；点"复制结果"发回</p>
+  </a>
+
   <div class="milestone">
     <div class="row"><span class="name">D4 · 沙盘集成 + 降级链</span><span class="badge todo">待建设</span></div>
     <p class="desc">paddy-diorama 沙盘接入锚定；降级链全通（SLAM → 陀螺仪 3DoF → 纯 3D）。增补：浏览器内 ML 单目深度（Depth Anything V2 + WebGPU，低频稠密深度增强平面分割；动工前先跑 Xenova demo 实测帧率 ≥1fps）。</p>
