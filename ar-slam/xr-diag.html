@@ -205,6 +205,8 @@ for (const key of ['plane', 'point', 'pointplane', 'transient'])
 let refSpace = null, viewerSpace = null, htSources = {}, transientSrc = null;
 let anchor = null, anchorFirstPos = null;
 let prevPos = null, prevQuat = null, nullStreak = 0, t0Baseline = 0;
+// select 事件帧上 getViewerPose 在 OPPO 浏览器抛 InvalidStateError（A1 迭代②真机实锤）→ rAF 里缓存最新位姿，点屏用缓存（W2 xr.js 已验通路）
+let lastViewerPose = null;
 const vib = ms => { try { navigator.vibrate?.(ms); } catch {} };
 
 async function enterBaseline() {
@@ -248,7 +250,7 @@ async function enterBaseline() {
 
   session.addEventListener('select', onSelect);
   session.addEventListener('end', () => {
-    session = null; htSources = {}; transientSrc = null;
+    session = null; htSources = {}; transientSrc = null; lastViewerPose = null;
     if (!baselineDone) { baselineDone = true; renderReport(); }
     $('btnEnter').disabled = false;
     msg('会话已结束。报告在下方，点"复制结果"发回；进阶探测可逐个点击。');
@@ -261,6 +263,7 @@ async function enterBaseline() {
 $('btnEnter').addEventListener('click', enterBaseline);
 
 function onSelect(e) {
+  if (!session) return;
   const frame = e.frame;
   // transient hit-test 对照（点屏瞬间的射线命中）
   if (transientSrc) {
@@ -273,9 +276,9 @@ function onSelect(e) {
       }
     } catch (err) { B.hitSources.transient.status = '读取出错: ' + err.name; }
   }
-  // 锚点：优先 hit 命中点，无命中退化为镜头前 1.2m/下 1m（W2 同款兜底，漂移对照实验）
-  const vp = frame.getViewerPose(refSpace);
-  if (!vp || anchor) return;
+  // 锚点：优先 hit 命中点，无命中退化为 rAF 缓存位姿前 1.2m/下 1m（W2 同款兜底）
+  // select 事件帧上 getViewerPose 在 OPPO 浏览器抛 InvalidStateError（A1 迭代②实锤）→ 用缓存位姿
+  if (anchor) return;
   let poseMat = null, via = 'fallback';
   for (const key of ['pointplane', 'plane', 'point']) {
     if (!htSources[key]) continue;
@@ -283,6 +286,8 @@ function onSelect(e) {
     if (hits.length) { const p = hits[0].getPose(refSpace); if (p) { poseMat = p.transform.matrix; via = 'hit:' + key; break; } }
   }
   if (!poseMat) {
+    const vp = lastViewerPose;
+    if (!vp) { B.anchor.err = '放置失败：尚无可用位姿（尚未收到首个 XR 帧）'; return; }
     const t = vp.transform;
     const fwd = { x: -t.matrix[8], z: -t.matrix[10] }; // -Z 前向的水平分量
     const len = Math.hypot(fwd.x, fwd.z) || 1;
@@ -313,6 +318,7 @@ function onBaselineFrame(t, frame) {
     return;
   }
   nullStreak = 0;
+  lastViewerPose = pose; // 缓存给 onSelect 用（事件帧 getViewerPose 会抛错）
   if (pose.emulatedPosition) T.emulated++;
   const p = pose.transform.position, q = pose.transform.orientation;
   if (prevPos) {
@@ -413,7 +419,12 @@ async function probeFeature(feat, btn) {
       if (feat === 'camera-access') d.cameraFrames = 0;
       if (feat === 'depth-sensing') d.depthOk = 0;
       if (feat === 'image-tracking') d.maxResults = 0;
-      await collectFrames(session, 3000, frame => {
+      // XRCamera / getDepthInformation 都需要 view 对象（挂在 XRView 上，不是 XRFrame——v1 曾错查 frame.camera 恒为 0）
+      const vs = (feat === 'camera-access' || feat === 'depth-sensing')
+        ? await session.requestReferenceSpace('viewer').catch(() => null) : null;
+      msg(`${feat} 已授予，采样中——缓慢移动手机扫桌面/地面…`);
+      // plane-detection 需要扫描建面，窗口加长（v1 真机 3s 太短 maxPlanes=0）
+      await collectFrames(session, feat === 'plane-detection' ? 8000 : 3000, frame => {
         if (!frame) return;
         d.frames++;
         try {
@@ -421,23 +432,22 @@ async function probeFeature(feat, btn) {
             d.maxPlanes = Math.max(d.maxPlanes, frame.detectedPlanes.size);
             frame.detectedPlanes.forEach(p => { d.orientations[p.orientation] = (d.orientations[p.orientation] || 0) + 1; });
           }
-          if (feat === 'camera-access' && frame.camera) d.cameraFrames++;
           if (feat === 'image-tracking' && frame.getImageTrackingResults) {
             const r = frame.getImageTrackingResults();
             d.maxResults = Math.max(d.maxResults, r.length);
           }
+          if (vs && (feat === 'camera-access' || feat === 'depth-sensing')) {
+            const pose = frame.getViewerPose(vs);
+            if (pose && pose.views.length) {
+              const cam = pose.views[0].camera;
+              if (feat === 'camera-access' && cam) { d.cameraFrames++; d.cameraSize = cam.width + '×' + cam.height; }
+              if (feat === 'depth-sensing') {
+                try { const info = frame.getDepthInformation(pose.views[0]); if (info) { d.depthOk++; d.depthSize = info.width + '×' + info.height; } } catch {}
+              }
+            }
+          }
         } catch {}
       });
-      if (feat === 'depth-sensing') { // 需要 view 对象，单独一轮
-        const sp = await session.requestReferenceSpace('viewer').catch(() => null);
-        if (sp) await collectFrames(session, 1500, frame => {
-          if (!frame) return;
-          const pose = frame.getViewerPose(sp);
-          if (pose && pose.views.length) {
-            try { const info = frame.getDepthInformation(pose.views[0]); if (info) { d.depthOk++; d.depthSize = info.width + '×' + info.height; } } catch {}
-          }
-        });
-      }
     } catch (e) { rec.dataErr = e.message; }
   }
   await endSession();
