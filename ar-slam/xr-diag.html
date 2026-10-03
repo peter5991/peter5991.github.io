@@ -46,7 +46,7 @@ footer{margin-top:auto;padding:8px 16px 16px;font-size:11px;color:#555;line-heig
   <b>操作脚本（进入 AR 后照做，约 1 分钟）：</b><br>
   ① 镜头对准桌面/地面，<b>缓慢移动</b>手机扫 40 秒<br>
   ② 屏幕震动了 = hit-test 有命中（重要信号）<br>
-  ③ <b>点屏幕一次</b>放测试锚点 → 走开 2~3 米回看方块是否钉住<br>
+  ③ <b>点屏幕</b>放测试锚点（再点=换位置重放）→ 走开 2~3 米回看方块是否钉住<br>
   ④ 按<b>返回键</b>退出 → 报告自动显示 → 点"复制结果"发回
 </div>
 
@@ -203,7 +203,7 @@ for (const key of ['plane', 'point', 'pointplane', 'transient'])
   B.hitSources[key] = { status: '未请求', firstHitSec: null, framesWithHit: 0, totalHits: 0 };
 
 let refSpace = null, viewerSpace = null, htSources = {}, transientSrc = null;
-let anchor = null, anchorFirstPos = null;
+let anchor = null, anchorFirstPos = null, lastAnchorPose = null;
 let prevPos = null, prevQuat = null, nullStreak = 0, t0Baseline = 0;
 // select 事件帧上 getViewerPose 在 OPPO 浏览器抛 InvalidStateError（A1 迭代②真机实锤）→ rAF 里缓存最新位姿，点屏用缓存（W2 xr.js 已验通路）
 let lastViewerPose = null;
@@ -250,7 +250,7 @@ async function enterBaseline() {
 
   session.addEventListener('select', onSelect);
   session.addEventListener('end', () => {
-    session = null; htSources = {}; transientSrc = null; lastViewerPose = null;
+    session = null; htSources = {}; transientSrc = null; lastViewerPose = null; lastAnchorPose = null;
     if (!baselineDone) { baselineDone = true; renderReport(); }
     $('btnEnter').disabled = false;
     msg('会话已结束。报告在下方，点"复制结果"发回；进阶探测可逐个点击。');
@@ -278,12 +278,13 @@ function onSelect(e) {
   }
   // 锚点：优先 hit 命中点，无命中退化为 rAF 缓存位姿前 1.2m/下 1m（W2 同款兜底）
   // select 事件帧上 getViewerPose 在 OPPO 浏览器抛 InvalidStateError（A1 迭代②实锤）→ 用缓存位姿
-  if (anchor) return;
-  let poseMat = null, via = 'fallback';
+  // 重复点屏=换锚（删旧建新），方便多次对比
+  if (anchor) { try { anchor.delete(); } catch {} anchor = null; anchorFirstPos = null; lastAnchorPose = null; B.anchor.replaced = (B.anchor.replaced || 0) + 1; }
+  let poseMat = null, hitRes = null, via = 'fallback';
   for (const key of ['pointplane', 'plane', 'point']) {
     if (!htSources[key]) continue;
     const hits = frame.getHitTestResults(htSources[key]);
-    if (hits.length) { const p = hits[0].getPose(refSpace); if (p) { poseMat = p.transform.matrix; via = 'hit:' + key; break; } }
+    if (hits.length) { const p = hits[0].getPose(refSpace); if (p) { poseMat = p.transform.matrix; hitRes = hits[0]; via = 'hit:' + key; break; } }
   }
   if (!poseMat) {
     const vp = lastViewerPose;
@@ -294,11 +295,25 @@ function onSelect(e) {
     poseMat = m4ts(t.position.x + fwd.x / len * 1.2, t.position.y - 1.0, t.position.z + fwd.z / len * 1.2, 1, 1, 1);
   }
   B.anchor.placedVia = via;
+  B.anchor.placements = (B.anchor.placements || 0) + 1;
   if (session.enabledFeatures.includes('anchors')) {
-    const xf = new XRRigidTransform({ x: poseMat[12], y: poseMat[13], z: poseMat[14] });
-    frame.createAnchor(xf, refSpace)
-      .then(a => { anchor = a; anchorFirstPos = null; B.anchor.created = true; B.anchor.createdVia = via; vib(120); })
-      .catch(err => { B.anchor.created = false; B.anchor.createErr = err.name + ': ' + err.message; });
+    const finish = (a, how) => {
+      anchor = a; anchorFirstPos = null; lastAnchorPose = null;
+      B.anchor.created = true; B.anchor.createdVia = via + '/' + how;
+      B.anchor.driftSeries = []; vib(120);
+    };
+    const freeAnchor = () => {
+      const xf = new XRRigidTransform({ x: poseMat[12], y: poseMat[13], z: poseMat[14] });
+      frame.createAnchor(xf, refSpace)
+        .then(a => finish(a, 'freeAnchor'))
+        .catch(err => { B.anchor.created = false; B.anchor.createErr = err.name + ': ' + err.message; });
+    };
+    // 迭代③：命中时优先 XRHitTestResult.createAnchor——锚点挂到平面几何上随平面精修校正，比自由空间锚点稳
+    if (hitRes && typeof hitRes.createAnchor === 'function') {
+      hitRes.createAnchor()
+        .then(a => finish(a, 'hitAnchor'))
+        .catch(err => { logErr('hitResult.createAnchor 失败，退自由锚点: ' + err.message); freeAnchor(); });
+    } else freeAnchor();
   } else {
     B.anchor.created = false; B.anchor.createErr = 'anchors 未授予（enabledFeatures 无此项）';
   }
@@ -341,22 +356,29 @@ function onBaselineFrame(t, frame) {
       if (key === 'pointplane' && !hitPose) hitPose = hits[0].getPose(refSpace);
     }
   }
-  // 锚点跟踪：漂移 = 相对首个有效位姿的距离
+  // 锚点跟踪：漂移 = 相对首个有效位姿的距离；getPose null 帧持最后位姿渲染（计数照记，消除闪灭——迭代③）
   let anchorPose = null;
   if (anchor) {
     const A = B.anchor;
     A.framesTotal = (A.framesTotal || 0) + 1;
     const inSet = frame.trackedAnchors ? frame.trackedAnchors.has(anchor) : true;
     if (!inSet) A.missingFromSet = (A.missingFromSet || 0) + 1;
-    try { anchorPose = frame.getPose(anchor.anchorSpace, refSpace); } catch {}
-    if (anchorPose) {
+    let p = null;
+    try { p = frame.getPose(anchor.anchorSpace, refSpace); } catch {}
+    if (p) {
+      lastAnchorPose = p;
       A.framesUpdated = (A.framesUpdated || 0) + 1;
-      const ap = anchorPose.transform.position;
+      const ap = p.transform.position;
       if (!anchorFirstPos) anchorFirstPos = { x: ap.x, y: ap.y, z: ap.z };
       const drift = Math.hypot(ap.x - anchorFirstPos.x, ap.y - anchorFirstPos.y, ap.z - anchorFirstPos.z) * 100;
       A.driftCm = +drift.toFixed(1);
       if (A.maxDriftCm == null || drift > A.maxDriftCm) A.maxDriftCm = A.driftCm;
+      // 漂移时间序列（每 5s 一点）——看是收敛还是持续漂
+      const sec = Math.round((performance.now() - t0Baseline) / 1000);
+      if (A.driftSeries && (A.driftSeries.length === 0 || sec - A.driftSeries[A.driftSeries.length - 1].t >= 5))
+        A.driftSeries.push({ t: sec, cm: A.driftCm });
     } else A.poseNull = (A.poseNull || 0) + 1;
+    anchorPose = p || lastAnchorPose;
   }
   try { renderFrame(s, frame, pose, hitPose, anchorPose); } catch (e) { if (!B.renderErr) { B.renderErr = e.message; logErr('渲染: ' + e.message); } }
 }
@@ -484,10 +506,11 @@ function renderReport() {
     `<tr><th>${k}</th><td>${r.status}</td><td>${r.totalHits ? `<span class="good">命中 ${r.totalHits} 次 / ${r.framesWithHit} 帧，首命中 ${r.firstHitSec}s</span>` : '<span class="bad">零命中</span>'}</td></tr>`).join('');
   const A = B_.anchor;
   $('anchorTb').innerHTML = [
-    ['放置方式', A.placedVia ?? '未放置'],
-    ['创建', A.created ? `<span class="good">成功（${A.createdVia}）</span>` : (A.createErr ?? '未尝试')],
-    ['位姿更新', A.framesUpdated != null ? `${A.framesUpdated}/${A.framesTotal} 帧` : '-'],
+    ['放置方式', (A.placedVia ?? '未放置') + (A.placements ? `（${A.placements} 次${A.replaced ? '，换锚 ' + A.replaced + ' 次' : ''}）` : '')],
+    ['创建', A.created ? `<span class="good">成功（${A.createdVia}）</span>` : (A.createErr ?? A.err ?? '未尝试')],
+    ['位姿更新', A.framesUpdated != null ? `${A.framesUpdated}/${A.framesTotal} 帧（null ${A.poseNull || 0} 帧持旧位姿渲染）` : '-'],
     ['当前/最大漂移', A.driftCm != null ? `${A.driftCm}cm / ${A.maxDriftCm}cm` : '-'],
+    ['漂移序列（5s 间隔）', A.driftSeries && A.driftSeries.length ? A.driftSeries.map(p => `${p.t}s:${p.cm}`).join(' ') : '-'],
   ].map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('');
   // 初判（对应开发计划判定表）
   const anyHit = Object.values(B_.hitSources).some(r => r.totalHits > 0);
