@@ -94,15 +94,15 @@ async function probeEnv() {
   e.xrExists = !!navigator.xr;
   if (navigator.xr) {
     for (const mode of ['immersive-ar', 'immersive-vr', 'inline']) {
-      try { e['support_' + mode] = await navigator.xr.isSessionSupported(mode); }
-      catch (err) { e['support_' + mode] = 'throw: ' + err.message; }
+      try { e['support_' + mode.replace(/-/g, '_')] = await navigator.xr.isSessionSupported(mode); }
+      catch (err) { e['support_' + mode.replace(/-/g, '_')] = 'throw: ' + err.message; }
     }
   }
   const rows = [
     ['HTTPS 安全上下文', e.secureContext ? '<span class="good">是</span>' : '<span class="bad">否（WebXR 硬性拒绝）</span>'],
     ['navigator.xr', e.xrExists ? '<span class="good">存在</span>' : '<span class="bad">不存在</span>'],
     ['immersive-ar', e.support_immersive_ar === true ? '<span class="good">支持</span>' : `<span class="bad">${e.support_immersive_ar ?? '-'}</span>`],
-    ['immersive-vr / inline', `${e['support_immersive-vr'] ?? '-'} / ${e['support_inline'] ?? '-'}`],
+    ['immersive-vr / inline', `${e.support_immersive_vr ?? '-'} / ${e.support_inline ?? '-'}`],
     ['CPU 核', e.cores],
     ['UA', `<span style="font-size:10px;word-break:break-all">${e.ua}</span>`],
   ];
@@ -523,6 +523,10 @@ window.__selftest = () => {
   // 缩放 2 ∘ 平移(1,0,0)：点 (0,0,0) → 平移 →(1,0,0) → 缩放 →(2,0,0)
   const D = m4mul(m4ts(0, 0, 0, 2, 2, 2), m4ts(1, 0, 0, 1, 1, 1));
   t('T4 缩放∘平移作用于原点', D[12] === 2 && D[0] === 2, `x'=${D[12]}`);
+  // 回归（v1 真机 bug）：探测键名连字符/下划线不一致 → 真机误报"不支持 immersive-ar"
+  const sim = {};
+  for (const mode of ['immersive-ar', 'immersive-vr', 'inline']) sim['support_' + mode.replace(/-/g, '_')] = true;
+  t('T5 探测键名与读取一致', sim.support_immersive_ar === true && sim.support_immersive_vr === true && sim.support_inline === true);
   return out;
 };
 
