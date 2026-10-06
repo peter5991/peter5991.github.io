@@ -40,6 +40,16 @@
   }
   #btn-enter:disabled { opacity: 0.5; cursor: default; }
   #hint { color: #8a8f9c; font-size: 12px; letter-spacing: 1px; text-align: center; padding: 0 2em; }
+  /* D5 迭代①:调试日志面板(真机排障——折叠态一行,点标题展开,复制按钮) */
+  #logwrap {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 60;
+    background: rgba(10, 12, 16, 0.85); color: #cfd4de; font: 11px/1.5 monospace;
+  }
+  #loghead { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; cursor: pointer; }
+  #btn-copy { border: 1px solid #555; background: transparent; color: #cfd4de; border-radius: 6px; padding: 2px 10px; font: 11px monospace; cursor: pointer; }
+  #log { display: none; max-height: 36vh; overflow-y: auto; padding: 0 10px 8px; white-space: pre-wrap; word-break: break-all; }
+  #logwrap.open #log { display: block; }
+  html[data-error="1"] #logwrap { top: 44px; } /* 错误条占位,避免盖住面板头 */
   /* debug 角标(手机联调替代 console,M3 D5) */
   #dbg {
     position: fixed; left: 10px; bottom: 10px; z-index: 30;
@@ -80,6 +90,13 @@
       report('Unhandled rejection: ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason));
     });
     window.__reportErr = report;
+    // D5 迭代①:调试日志(真机排障——每步初始化打点,卡点一目了然)
+    window.__dbgLog = function (msg) {
+      var el = document.getElementById('log');
+      if (!el) return;
+      el.textContent += '[' + (performance.now() / 1000).toFixed(1) + 's] ' + msg + '\n';
+      el.scrollTop = el.scrollHeight;
+    };
   })();
 </script>
 </head>
@@ -98,6 +115,10 @@
   <div id="hint">进入后:镜头对准桌面/地面缓慢移动,绿圈出现后点屏幕放置;<br>找不到平面 8 秒会自动放置在镜头前方;放置后再点屏幕可换位置</div>
 </div>
 <div id="dbg">初始化…</div>
+<div id="logwrap">
+  <div id="loghead"><span>🪵 调试日志(点击展开)</span><button id="btn-copy" type="button">复制</button></div>
+  <div id="log"></div>
+</div>
 <div id="switcher">
   <div class="row" id="seasonRow">
     <button data-season="spring">春</button><button data-season="summer">夏</button>
@@ -163,6 +184,35 @@
       });
       mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-ready'] });
     }
+
+    // D5 迭代①:日志面板交互——点标题展开/收起;复制(clipboard API + execCommand 兜底);15s 未就绪自动展开
+    var logwrap = document.getElementById('logwrap');
+    var btnCopy = document.getElementById('btn-copy');
+    document.getElementById('loghead').addEventListener('click', function () {
+      logwrap.classList.toggle('open');
+    });
+    btnCopy.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var text = (document.getElementById('log').textContent || '(日志为空)') +
+        '\nUA: ' + navigator.userAgent;
+      function ok() { btnCopy.textContent = '已复制'; setTimeout(function () { btnCopy.textContent = '复制'; }, 1500); }
+      function legacy() {
+        var ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); ok(); } catch (err) { btnCopy.textContent = '复制失败'; }
+        ta.remove();
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(ok, legacy);
+      } else legacy();
+    });
+    setTimeout(function () {
+      if (document.documentElement.dataset.ready !== '1') {
+        logwrap.classList.add('open');
+        window.__dbgLog('⚠ 15s 仍未就绪——上面最后一行日志即卡点,请点"复制"发回');
+      }
+    }, 15000);
   })();
 </script>
 <script type="module" src="./src/xr.js"></script>

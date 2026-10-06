@@ -19,16 +19,38 @@ function easeOutBack(t) { // pop-in 缓动(零库;suika 用 GSAP power2.out,此�
   return 1 + c3 * u * u * u + c1 * u * u;
 }
 
+// D5 迭代①:初始化全链路打点(真机卡"初始化中"排障——最后一行日志即卡点)
+function log(msg) {
+  console.log('[xr]', msg);
+  window.__dbgLog && window.__dbgLog(msg);
+}
+
 async function start() {
+  log('页面加载完成,开始初始化 three r' + THREE.REVISION);
   const { season, time, tParam, animOn: animOnParam } = parseParams(location.search);
+  log(`参数: season=${season} time=${time} anim=${animOnParam ? 'on' : 'off'} t=${tParam}`);
   const { cfg, usedSeason, usedTime } = await loadCfg(season, time);
+  log('config/scene.json 加载完成');
   let animOn = animOnParam;
 
   const btnEnter = document.getElementById('btn-enter');
   const badge = document.getElementById('dbg');
 
   // ---- 能力检测(Fail Loud;只记录标志,场景装配照常走完——不支持时也能渲非 AR 预览/跑遥测,桌面冒烟可覆盖) ----
-  const xrSupported = !!(navigator.xr && (await navigator.xr.isSessionSupported('immersive-ar').catch(() => false)));
+  // 迭代①:isSessionSupported 加 5s 超时——OPPO 浏览器有 requestSession 挂起前科(W2),promise 永不 settle 会卡死初始化
+  let xrSupported = false;
+  if (navigator.xr) {
+    const r = await Promise.race([
+      navigator.xr.isSessionSupported('immersive-ar').then(v => ({ v }), e => ({ err: String(e) })),
+      new Promise(res => setTimeout(() => res({ timeout: true }), 5000))
+    ]);
+    if (r.timeout) log('⚠ isSessionSupported 5s 无响应(疑浏览器挂起),按不支持处理');
+    else if (r.err) log('isSessionSupported 抛错: ' + r.err);
+    else xrSupported = r.v === true;
+  } else {
+    log('navigator.xr 不存在');
+  }
+  log('immersive-ar 支持: ' + xrSupported);
 
   // ---- three.js 基本盘 ----
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -50,6 +72,7 @@ async function start() {
     window.__reportErr && window.__reportErr('WebGL context lost');
   });
   document.body.appendChild(renderer.domElement);
+  log('renderer 创建完成 WebGL' + (renderer.getContext() instanceof WebGL2RenderingContext ? 2 : 1));
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
@@ -60,14 +83,17 @@ async function start() {
   });
 
   applyEnvironment(renderer, scene, cfg, { background: false }); // AR 画布透明;雾距离 30+ 在放置尺度下天然惰性
+  log('PMREM 环境贴图完成');
 
   // ---- 沙盘装配:模块+灯光进 diorama 组(灯光随内容同旋转,保住 D2 验收相对光照),holder 管世界定位/锚定 ----
   const diorama = new THREE.Group();
   const { modules, updaters } = buildModules(cfg);
   for (const m of modules) diorama.add(m);
   addLights(diorama, cfg);
+  log('场景模块装配完成(' + modules.length + ' 模块)');
   const bbox = new THREE.Box3().setFromObject(diorama); // 变换前局部包围盒
   const S = SCENE_WIDTH_M / bbox.getSize(new THREE.Vector3()).x;
+  log('缩放系数 S=' + S.toFixed(5) + '(场景宽→' + SCENE_WIDTH_M + 'm)');
   diorama.scale.setScalar(S);
   diorama.position.y = -bbox.min.y * S; // 底座裙底贴 y=0,不沉入桌面
   const holder = new THREE.Group();
@@ -109,16 +135,19 @@ async function start() {
         optionalFeatures: ['anchors'],
       });
     } catch (e) {
+      log('requestSession 失败: ' + e.name + ': ' + e.message);
       window.__reportErr && window.__reportErr('进入 AR 失败: ' + e.name + ': ' + e.message);
       entering = false;
       btnEnter.disabled = false;
       return;
     }
+    log('requestSession 成功 enabledFeatures: ' + [...xrSession.enabledFeatures].join(','));
     await renderer.xr.setSession(xrSession);
     localSpace = await xrSession.requestReferenceSpace('local');
     const viewerSpace = await xrSession.requestReferenceSpace('viewer');
     // entityTypes 默认仅 ['plane'](规范);显式加 'point'——特征点命中对平面检测依赖弱(A1 三路全命中,双保险)
     hitTestSource = await xrSession.requestHitTestSource({ space: viewerSpace, entityTypes: ['point', 'plane'] });
+    log('会话就绪(local refSpace + hitTestSource)');
     sessionStartAt = performance.now();
     everHit = false;
 
@@ -169,14 +198,15 @@ async function start() {
     holder.scale.setScalar(0.001);
     navigator.vibrate?.(120); // 沿用 B1 惯例:非文字反馈
     window.paddy.xr.placed = how;
+    log('已放置(' + how + ') @ ' + pos.x.toFixed(2) + ',' + pos.y.toFixed(2) + ',' + pos.z.toFixed(2));
 
     // anchors 可用则创建世界锚点,抗 ARCore 漂移校正;重放时先删旧锚
     if (placedAnchor) { try { placedAnchor.delete(); } catch {} placedAnchor = null; }
     if (xrSession && xrSession.enabledFeatures.includes('anchors') && lastFrame) {
       const xf = new XRRigidTransform({ x: pos.x, y: pos.y, z: pos.z });
       lastFrame.createAnchor(xf, localSpace)
-        .then((a) => { placedAnchor = a; window.paddy.xr.anchor = true; })
-        .catch(() => { window.paddy.xr.anchor = 'failed(静态放置)'; });
+        .then((a) => { placedAnchor = a; window.paddy.xr.anchor = true; log('锚点已创建'); })
+        .catch((e) => { window.paddy.xr.anchor = 'failed(静态放置)'; log('锚点创建失败(静态放置): ' + e.message); });
     }
   }
 
@@ -202,8 +232,10 @@ async function start() {
   };
   window.__paddy = { scene, renderer, camera, holder, THREE }; // D5 调试全局
 
+  log('渲染循环启动');
   renderer.setAnimationLoop((time, frame) => {
     lastFrame = frame || null;
+    if (frames === 0) log('首个渲染帧到达');
     const dt = Math.min(clock.getDelta(), 0.05);
     if (frame && hitTestSource && localSpace) {
       lastViewerPose = frame.getViewerPose(localSpace); // 每帧缓存,放置用最新位姿(不在事件帧取)
@@ -289,5 +321,6 @@ async function start() {
 
 start().catch((e) => {
   console.error(e);
+  log('初始化失败: ' + ((e && (e.stack || e.message)) || String(e)));
   window.__reportErr && window.__reportErr('WebXR 初始化失败: ' + ((e && (e.stack || e.message)) || String(e)));
 });
