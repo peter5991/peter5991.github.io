@@ -89,6 +89,15 @@
     window.addEventListener('unhandledrejection', function (e) {
       report('Unhandled rejection: ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason));
     });
+    // D5 迭代②:资源加载失败(模块 404 等)不冒泡,必须捕获阶段监听——否则整个模块图静默不执行
+    window.addEventListener('error', function (e) {
+      var t = e.target;
+      if (t && (t.src || t.href)) {
+        var url = t.src || t.href;
+        report('资源加载失败: ' + url);
+        window.__dbgLog && window.__dbgLog('资源加载失败: ' + url);
+      }
+    }, true);
     window.__reportErr = report;
     // D5 迭代①:调试日志(真机排障——每步初始化打点,卡点一目了然)
     window.__dbgLog = function (msg) {
@@ -215,6 +224,6 @@
     }, 15000);
   })();
 </script>
-<script type="module" src="./src/xr.js"></script>
+<script type="module" src="./src/xr.js?v=20261006132413"></script>
 </body>
 </html>

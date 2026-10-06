@@ -1,5 +1,5 @@
 // toon.js — 三渲二基础配方(toon-diorama recipe §2.1~2.5)
-import * as THREE from '../vendor/three.module.min.js';
+import * as THREE from '../vendor/three.module.min.js?v=20261006132413';
 
 // 4 档灰阶渐变图,NearestFilter 硬切分
 const gradData = new Uint8Array([

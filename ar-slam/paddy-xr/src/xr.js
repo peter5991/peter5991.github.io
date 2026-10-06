@@ -3,8 +3,8 @@
 // 主路径:hit-test(point+plane)→ 绿圈指示 → 点屏放置 → XRAnchor 每帧跟随漂移校正;再点屏换位置
 // 借鉴 dmvrg/webxr-ar-suika 三细节:①会话 8s 无命中自动兜底摆位(免操作)②pixelRatio 封顶+单向降级 ③放置 pop-in 动画(零库自实现,不用 GSAP)
 // 反面教材已规避:suika 用 three 默认 local-floor 参考空间——本机(OPPO)只支持 local/viewer,显式 'local' 否则黑屏(W2 踩坑)
-import * as THREE from '../vendor/three.module.min.js';
-import { parseParams, loadCfg, applyEnvironment, addLights, buildModules } from './scene-common.js';
+import * as THREE from '../vendor/three.module.min.js?v=20261006132413';
+import { parseParams, loadCfg, applyEnvironment, addLights, buildModules } from './scene-common.js?v=20261006132413';
 
 const SCENE_WIDTH_M = 0.5;        // 桌面放置真实宽度(m)。沿用 W2 尺度假设(MindAR 卡宽 21cm 太小),实测后再调
 const AUTO_PLACE_MS = 8000;       // suika 式兜底:会话内无命中超过此时长自动放镜头前方
