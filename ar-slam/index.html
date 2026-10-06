@@ -35,10 +35,16 @@ footer a{border-bottom:1px solid #333}
 <body>
 <header>
   <h1>AR 测试中心</h1>
-  <p class="sub">目标设备：Reno14 系统浏览器。🧊 #9 自研 WASM SLAM 已冻结（2026-09-30，D1~D4 卡片保留备查）；当前主线 = A1 WebXR 诊断 → B 图卡方案（见 docs/AR定位新路线-开发计划v1.md）。</p>
+  <p class="sub">目标设备：Reno14 系统浏览器。🧊 #9 自研 WASM SLAM 已冻结（2026-09-30，D1~D4 卡片保留备查）；当前主线 = WebXR 空间放置（A1 判定表第 1 行：hit-test 正常，不走图卡；见 docs/AR定位新路线-开发计划v1.md）。</p>
 </header>
 
 <main>
+  <a class="milestone" href="paddy-xr/xr.html">
+    <div class="row"><span class="name">D5 · WebXR 空间放置（稻田沙盘）</span><span class="badge doing">待真机</span></div>
+    <p class="desc">A1 判定落地：D1~D3 沙盘场景直接空间放置。hit-test（point+plane）→ 绿圈指示 → 点屏放置 → XRAnchor 每帧跟随；再点屏换位置。8s 无命中自动兜底放镜头前方；pixelRatio 封顶 1.5 起 + 单向降级；放置 pop-in 动画。桌面冒烟已通过（场景装配/遥测/Fail Loud）。</p>
+    <p class="accept">绿圈命中率正常；放置后绕行 2~3m 不漂；fps p95 ≥30；8s 兜底观感可接受；0.5m 尺度评估（嫌小/嫌大报数）</p>
+  </a>
+
   <a class="milestone" href="xr-diag.html">
     <div class="row"><span class="name">A1 · WebXR 诊断（ARCore 能力探针）</span><span class="badge doing">待真机</span></div>
     <p class="desc">新路线第一步：裸 WebXR 诊断页（故意不用 three.js——排除 W2 嫌疑变量）。基线会话记录追踪健康度 / 三路 hit-test（plane/point/混合）/ 锚点漂移；进阶 feature（plane-detection/camera-access/depth-sensing/image-tracking/dom-overlay）逐个独立会话探测 + 10s 挂起看门狗。退出会话后出报告，复制 JSON 发回。</p>

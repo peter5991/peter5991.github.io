@@ -1,0 +1,293 @@
+// xr.js — D5 WebXR 任意平面 AR(装配层与网页版/MindAR 版共用 scene-common.js)
+// 路线依据:tech-challenges #10 A1 判定表第 1 行——Reno14 hit-test 工作正常(ARCore 1.56),直接空间放置不走图卡
+// 主路径:hit-test(point+plane)→ 绿圈指示 → 点屏放置 → XRAnchor 每帧跟随漂移校正;再点屏换位置
+// 借鉴 dmvrg/webxr-ar-suika 三细节:①会话 8s 无命中自动兜底摆位(免操作)②pixelRatio 封顶+单向降级 ③放置 pop-in 动画(零库自实现,不用 GSAP)
+// 反面教材已规避:suika 用 three 默认 local-floor 参考空间——本机(OPPO)只支持 local/viewer,显式 'local' 否则黑屏(W2 踩坑)
+import * as THREE from '../vendor/three.module.min.js';
+import { parseParams, loadCfg, applyEnvironment, addLights, buildModules } from './scene-common.js';
+
+const SCENE_WIDTH_M = 0.5;        // 桌面放置真实宽度(m)。沿用 W2 尺度假设(MindAR 卡宽 21cm 太小),实测后再调
+const AUTO_PLACE_MS = 8000;       // suika 式兜底:会话内无命中超过此时长自动放镜头前方
+const FALLBACK_FORWARD_M = 1.2;   // 兜底放置:镜头水平前方距离
+const FALLBACK_DROP_M = 1.0;      // 兜底放置:视点下方估测桌面高度
+const POP_DURATION = 0.3;         // 放置 pop-in 时长(s)
+const DPR_STEPS = [1.5, 1.25, 1.0]; // M3 D8:自适应 DPR 单向降级,永不回升(首档即 suika 式封顶)
+const FPS_TARGET = 28;            // 降级触发线(验收线 ≥30,留 2 帧余量)
+
+function easeOutBack(t) { // pop-in 缓动(零库;suika 用 GSAP power2.out,此处带轻微回弹更"放上去"感)
+  const c1 = 1.70158, c3 = c1 + 1, u = t - 1;
+  return 1 + c3 * u * u * u + c1 * u * u;
+}
+
+async function start() {
+  const { season, time, tParam, animOn: animOnParam } = parseParams(location.search);
+  const { cfg, usedSeason, usedTime } = await loadCfg(season, time);
+  let animOn = animOnParam;
+
+  const btnEnter = document.getElementById('btn-enter');
+  const badge = document.getElementById('dbg');
+
+  // ---- 能力检测(Fail Loud;只记录标志,场景装配照常走完——不支持时也能渲非 AR 预览/跑遥测,桌面冒烟可覆盖) ----
+  const xrSupported = !!(navigator.xr && (await navigator.xr.isSessionSupported('immersive-ar').catch(() => false)));
+
+  // ---- three.js 基本盘 ----
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setClearColor(0x000000, 0); // AR 合成需要透明清屏,否则相机画面被黑底盖住
+  let dprStep = 0;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, DPR_STEPS[0])); // suika 式封顶:高 DPR 手机 XR 帧率隐患
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.xr.enabled = true;
+  // 本机(OPPO)不支持 three.js 默认的 local-floor 参考空间(enabledFeatures 只有 local/viewer),
+  // 显式降为 local,否则 setSession 内部 requestReferenceSpace 直接抛 NotSupportedError → 黑屏
+  renderer.xr.setReferenceSpaceType('local');
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = cfg.exposure ?? 1.1;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.domElement.addEventListener('webglcontextlost', (e) => {
+    e.preventDefault();
+    document.documentElement.dataset.webgl = '0';
+    window.__reportErr && window.__reportErr('WebGL context lost');
+  });
+  document.body.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  applyEnvironment(renderer, scene, cfg, { background: false }); // AR 画布透明;雾距离 30+ 在放置尺度下天然惰性
+
+  // ---- 沙盘装配:模块+灯光进 diorama 组(灯光随内容同旋转,保住 D2 验收相对光照),holder 管世界定位/锚定 ----
+  const diorama = new THREE.Group();
+  const { modules, updaters } = buildModules(cfg);
+  for (const m of modules) diorama.add(m);
+  addLights(diorama, cfg);
+  const bbox = new THREE.Box3().setFromObject(diorama); // 变换前局部包围盒
+  const S = SCENE_WIDTH_M / bbox.getSize(new THREE.Vector3()).x;
+  diorama.scale.setScalar(S);
+  diorama.position.y = -bbox.min.y * S; // 底座裙底贴 y=0,不沉入桌面
+  const holder = new THREE.Group();
+  holder.add(diorama);
+  holder.visible = false;
+  scene.add(holder);
+
+  // ---- 放置指示圈(沿用 W2 惯例:绿圈) ----
+  const reticle = new THREE.Mesh(
+    new THREE.RingGeometry(0.08, 0.1, 32).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: 0x4caf50 })
+  );
+  reticle.visible = false;
+  reticle.matrixAutoUpdate = false;
+  scene.add(reticle);
+
+  // ---- XR session 状态 ----
+  let xrSession = null;
+  let hitTestSource = null;
+  let localSpace = null;
+  let placedAnchor = null;
+  let placed = false;
+  let everHit = false;
+  let sessionStartAt = 0;
+  let popT = 1; // pop-in 进度(1=完成)
+
+  let entering = false;
+  async function enterAR() {
+    if (!xrSupported || entering || xrSession) return; // 防重入:双击/连点会直接撞 InvalidStateError
+    entering = true;
+    btnEnter.disabled = true;
+    // 残留会话回收:上一个 session 未正常结束时 getSession() 能拿到,先 end 掉
+    const stale = renderer.xr.getSession?.();
+    if (stale) { try { await stale.end(); } catch {} }
+    // 最小 feature 集(W2 地雷:dom-overlay/plane-detection 曾致 requestSession 在 OPPO 上挂起,先不加)
+    try {
+      xrSession = await navigator.xr.requestSession('immersive-ar', {
+        requiredFeatures: ['hit-test'],
+        optionalFeatures: ['anchors'],
+      });
+    } catch (e) {
+      window.__reportErr && window.__reportErr('进入 AR 失败: ' + e.name + ': ' + e.message);
+      entering = false;
+      btnEnter.disabled = false;
+      return;
+    }
+    await renderer.xr.setSession(xrSession);
+    localSpace = await xrSession.requestReferenceSpace('local');
+    const viewerSpace = await xrSession.requestReferenceSpace('viewer');
+    // entityTypes 默认仅 ['plane'](规范);显式加 'point'——特征点命中对平面检测依赖弱(A1 三路全命中,双保险)
+    hitTestSource = await xrSession.requestHitTestSource({ space: viewerSpace, entityTypes: ['point', 'plane'] });
+    sessionStartAt = performance.now();
+    everHit = false;
+
+    xrSession.addEventListener('select', place);
+    xrSession.addEventListener('end', () => {
+      xrSession = null;
+      hitTestSource = null;
+      placedAnchor = null;
+      entering = false;
+      btnEnter.disabled = false;
+      document.getElementById('enterwrap').style.display = '';
+      document.documentElement.dataset.xr = '0';
+    });
+
+    document.getElementById('enterwrap').style.display = 'none';
+    document.documentElement.dataset.xr = '1';
+    entering = false;
+  }
+  btnEnter.addEventListener('click', enterAR);
+
+  function place() {
+    // 用 rAF 缓存的命中位姿——A1 迭代②地雷:select 事件帧上 getViewerPose 在 OPPO 抛 InvalidStateError
+    if (lastHitPose) {
+      placeAt(new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().fromArray(lastHitPose.transform.matrix)), 'hit');
+    } else if (lastViewerPose) {
+      placeAt(fallbackPosition(lastViewerPose), 'fallback-tap');
+    }
+  }
+
+  function fallbackPosition(viewerPose) { // suika 式:镜头水平前方固定距离,视点下方估桌面
+    const t = viewerPose.transform;
+    const camQuat = new THREE.Quaternion(t.orientation.x, t.orientation.y, t.orientation.z, t.orientation.w);
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camQuat);
+    fwd.y = 0; // 只取水平朝向,沙盘直立
+    fwd.normalize();
+    const pos = new THREE.Vector3(t.position.x, t.position.y, t.position.z).addScaledVector(fwd, FALLBACK_FORWARD_M);
+    pos.y = t.position.y - FALLBACK_DROP_M;
+    return pos;
+  }
+
+  const anchorMat = new THREE.Matrix4();
+  function placeAt(pos, how) {
+    holder.position.copy(pos);
+    holder.quaternion.identity();
+    holder.visible = true;
+    placed = true;
+    popT = 0; // 触发 pop-in
+    holder.scale.setScalar(0.001);
+    navigator.vibrate?.(120); // 沿用 B1 惯例:非文字反馈
+    window.paddy.xr.placed = how;
+
+    // anchors 可用则创建世界锚点,抗 ARCore 漂移校正;重放时先删旧锚
+    if (placedAnchor) { try { placedAnchor.delete(); } catch {} placedAnchor = null; }
+    if (xrSession && xrSession.enabledFeatures.includes('anchors') && lastFrame) {
+      const xf = new XRRigidTransform({ x: pos.x, y: pos.y, z: pos.z });
+      lastFrame.createAnchor(xf, localSpace)
+        .then((a) => { placedAnchor = a; window.paddy.xr.anchor = true; })
+        .catch(() => { window.paddy.xr.anchor = 'failed(静态放置)'; });
+    }
+  }
+
+  // ---- 帧循环 ----
+  let lastHitPose = null;
+  let lastViewerPose = null;
+  let lastFrame = null;
+  const clock = new THREE.Clock();
+  let tAnim = tParam ?? 0;
+  let frames = 0;
+  const dts = [];
+  let lowWindows = 0;
+
+  window.paddy = {
+    ready: false, drawCalls: 0, triangles: 0, fps: 0, fpsP95: 0, season: usedSeason, time: usedTime,
+    anim: { on: animOn, t: 0 },
+    xr: { hit: false, placed: false, anchor: false },
+    setAnim(on) {
+      animOn = !!on;
+      if (tParam === null) tAnim = 0;
+      window.paddy.anim.on = animOn;
+    }
+  };
+  window.__paddy = { scene, renderer, camera, holder, THREE }; // D5 调试全局
+
+  renderer.setAnimationLoop((time, frame) => {
+    lastFrame = frame || null;
+    const dt = Math.min(clock.getDelta(), 0.05);
+    if (frame && hitTestSource && localSpace) {
+      lastViewerPose = frame.getViewerPose(localSpace); // 每帧缓存,放置用最新位姿(不在事件帧取)
+      const hits = frame.getHitTestResults(hitTestSource);
+      if (hits.length > 0) {
+        lastHitPose = hits[0].getPose(localSpace);
+        everHit = true;
+        window.paddy.xr.hit = true;
+        if (lastHitPose) {
+          reticle.visible = true;
+          reticle.matrix.fromArray(lastHitPose.transform.matrix);
+        }
+      } else {
+        lastHitPose = null;
+        reticle.visible = false;
+        window.paddy.xr.hit = false;
+      }
+      // suika 式兜底:会话内超 AUTO_PLACE_MS 仍无命中且未放置 → 自动放镜头前方,免用户干等
+      if (!placed && !everHit && performance.now() - sessionStartAt > AUTO_PLACE_MS && lastViewerPose) {
+        placeAt(fallbackPosition(lastViewerPose), 'auto-fallback');
+      }
+      // 每帧从锚点取位姿,跟随 ARCore 漂移校正
+      if (placed && placedAnchor) {
+        const pose = frame.getPose(placedAnchor.anchorSpace, localSpace);
+        if (pose) {
+          anchorMat.fromArray(pose.transform.matrix);
+          holder.position.setFromMatrixPosition(anchorMat);
+        }
+      }
+    }
+
+    // pop-in 动画(suika 细节③,零库自实现)
+    if (popT < 1) {
+      popT = Math.min(1, popT + dt / POP_DURATION);
+      holder.scale.setScalar(Math.max(0.001, easeOutBack(popT)));
+    }
+
+    if (animOn && tParam === null) tAnim += dt;
+    for (const u of updaters) u(tAnim);
+    renderer.render(scene, camera);
+
+    // fps 遥测:滑动窗 120 帧,p95(最差 5%)帧耗时换算 fps(与 ar.js 同款)
+    frames++;
+    dts.push(dt);
+    if (dts.length > 120) dts.shift();
+    if (frames % 30 === 0 && dts.length >= 60) {
+      const sorted = [...dts].sort((a, b) => b - a);
+      const fpsP95 = Math.round(1 / sorted[Math.floor(sorted.length * 0.95)]);
+      window.paddy.fpsP95 = fpsP95;
+      document.documentElement.dataset.fpsP95 = String(fpsP95);
+      // D8 单向降级:连续两窗低于触发线 → DPR 降一档
+      if (frames % 120 === 0) {
+        if (fpsP95 < FPS_TARGET && dprStep < DPR_STEPS.length - 1) {
+          if (++lowWindows >= 2) {
+            dprStep++;
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, DPR_STEPS[dprStep]));
+            document.documentElement.dataset.dprStep = String(dprStep);
+            lowWindows = 0;
+          }
+        } else lowWindows = 0;
+      }
+      if (badge) badge.textContent =
+        `fps ${window.paddy.fps} | p95 ${fpsP95} | ${window.paddy.xr.hit ? '命中✓' : '找平面'} | ${placed ? '已放置(' + window.paddy.xr.placed + ')' : '未放置'} | dpr ${DPR_STEPS[dprStep]}`;
+    }
+    window.paddy.drawCalls = renderer.info.render.calls;
+    window.paddy.triangles = renderer.info.render.triangles;
+    window.paddy.anim.t = +(((tAnim % 23) + 23) % 23).toFixed(2);
+    if (dt > 0) window.paddy.fps = Math.round(1 / dt);
+    if (frames === 3) {
+      window.paddy.ready = true;
+      document.documentElement.dataset.ready = '1';
+      const el = document.getElementById('loading');
+      if (el) el.remove();
+      if (!xrSupported) {
+        document.documentElement.dataset.noxr = '1';
+        window.__reportErr && window.__reportErr('此设备/浏览器不支持 WebXR immersive-ar(可用 ar.html 图卡保底版)');
+      } else {
+        btnEnter.disabled = false; // 场景就绪才允许进入(模型/灯光已装配)
+      }
+    }
+  });
+}
+
+start().catch((e) => {
+  console.error(e);
+  window.__reportErr && window.__reportErr('WebXR 初始化失败: ' + ((e && (e.stack || e.message)) || String(e)));
+});
