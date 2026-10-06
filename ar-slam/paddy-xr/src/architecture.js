@@ -1,7 +1,7 @@
 // architecture.js — 农舍 + 小车站 + 铁轨 + 静态列车(D1 全静态,春+昼)
 // 契约:export function buildArchitecture(ctx) → THREE.Group
 // 所有颜色/尺寸取自 cfg(config/scene.json seasons.spring.day),随机一律走 ctx.rand
-import * as THREE from '../vendor/three.module.min.js?v=20261006132413';
+import * as THREE from '../vendor/three.module.min.js?v=20261006134713';
 
 export function buildArchitecture(ctx) {
   const { toon, M, B, C, outline, textTex, rand, cfg } = ctx;

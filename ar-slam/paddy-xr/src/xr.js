@@ -3,11 +3,11 @@
 // 主路径:hit-test(point+plane)→ 绿圈指示 → 点屏放置 → XRAnchor 每帧跟随漂移校正;再点屏换位置
 // 借鉴 dmvrg/webxr-ar-suika 三细节:①会话 8s 无命中自动兜底摆位(免操作)②pixelRatio 封顶+单向降级 ③放置 pop-in 动画(零库自实现,不用 GSAP)
 // 反面教材已规避:suika 用 three 默认 local-floor 参考空间——本机(OPPO)只支持 local/viewer,显式 'local' 否则黑屏(W2 踩坑)
-import * as THREE from '../vendor/three.module.min.js?v=20261006132413';
-import { parseParams, loadCfg, applyEnvironment, addLights, buildModules } from './scene-common.js?v=20261006132413';
+import * as THREE from '../vendor/three.module.min.js?v=20261006134713';
+import { parseParams, loadCfg, applyEnvironment, addLights, buildModules } from './scene-common.js?v=20261006134713';
 
 const SCENE_WIDTH_M = 0.5;        // 桌面放置真实宽度(m)。沿用 W2 尺度假设(MindAR 卡宽 21cm 太小),实测后再调
-const AUTO_PLACE_MS = 8000;       // suika 式兜底:会话内无命中超过此时长自动放镜头前方
+const AUTO_PLACE_MS = 25000;      // suika 式兜底:会话内无命中超过此时长自动放镜头前方。A1 实测首命中 19.1s,8s 给早了(迭代③)
 const FALLBACK_FORWARD_M = 1.2;   // 兜底放置:镜头水平前方距离
 const FALLBACK_DROP_M = 1.0;      // 兜底放置:视点下方估测桌面高度
 const POP_DURATION = 0.3;         // 放置 pop-in 时长(s)
@@ -204,16 +204,25 @@ async function start() {
     if (placedAnchor) { try { placedAnchor.delete(); } catch {} placedAnchor = null; }
     if (xrSession && xrSession.enabledFeatures.includes('anchors') && lastFrame) {
       const xf = new XRRigidTransform({ x: pos.x, y: pos.y, z: pos.z });
-      lastFrame.createAnchor(xf, localSpace)
-        .then((a) => { placedAnchor = a; window.paddy.xr.anchor = true; log('锚点已创建'); })
-        .catch((e) => { window.paddy.xr.anchor = 'failed(静态放置)'; log('锚点创建失败(静态放置): ' + e.message); });
+      try {
+        // 迭代③:select 事件帧里 lastFrame 可能已失效(XRFrame 仅在 rAF 回调内有效),包 try 防同步抛错
+        lastFrame.createAnchor(xf, localSpace)
+          .then((a) => { placedAnchor = a; window.paddy.xr.anchor = true; log('锚点已创建'); })
+          .catch((e) => { window.paddy.xr.anchor = 'failed(静态放置)'; log('锚点创建失败(静态放置): ' + e.message); });
+      } catch (e) {
+        window.paddy.xr.anchor = 'failed(帧失效)';
+        log('createAnchor 同步抛错(帧已失效,静态放置): ' + e.message);
+      }
     }
+    placedPos0 = pos.clone(); // 漂移采样基准(迭代③)
   }
 
   // ---- 帧循环 ----
   let lastHitPose = null;
   let lastViewerPose = null;
   let lastFrame = null;
+  let placedPos0 = null;   // 漂移采样基准(迭代③)
+  let lastStatAt = 0;      // 周期打点计时
   const clock = new THREE.Clock();
   let tAnim = tParam ?? 0;
   let frames = 0;
@@ -241,8 +250,12 @@ async function start() {
       lastViewerPose = frame.getViewerPose(localSpace); // 每帧缓存,放置用最新位姿(不在事件帧取)
       const hits = frame.getHitTestResults(hitTestSource);
       if (hits.length > 0) {
-        lastHitPose = hits[0].getPose(localSpace);
+        if (!everHit) { // 迭代③:首命中打点+震动(会话内 DOM 不可见,震动=唯一非文字反馈)
+          log(`hit-test 首命中 @ ${((performance.now() - sessionStartAt) / 1000).toFixed(1)}s(共 ${hits.length} 个)`);
+          navigator.vibrate?.(60);
+        }
         everHit = true;
+        lastHitPose = hits[0].getPose(localSpace);
         window.paddy.xr.hit = true;
         if (lastHitPose) {
           reticle.visible = true;
@@ -252,6 +265,21 @@ async function start() {
         lastHitPose = null;
         reticle.visible = false;
         window.paddy.xr.hit = false;
+      }
+      // 迭代③:周期打点(5s)——未放置报命中状态,已放置报锚点漂移/视点距离
+      // 判读:走开 2~3m 后,锚点Δ≈0=世界锁定正常;锚点Δ≈走动距离=local 空间/锚点头耦合(钉不住的根因)
+      const nowMs = performance.now();
+      if (nowMs - lastStatAt > 5000 && nowMs - sessionStartAt > 5000) {
+        lastStatAt = nowMs;
+        const t = ((nowMs - sessionStartAt) / 1000).toFixed(0);
+        if (!placed) {
+          log(`[${t}s] 找平面中… 本帧命中=${hits.length} viewerPose=${lastViewerPose ? 'OK' : 'null'}`);
+        } else if (lastViewerPose && placedPos0) {
+          const vp = lastViewerPose.transform.position;
+          const dV = Math.hypot(vp.x - holder.position.x, vp.y - holder.position.y, vp.z - holder.position.z);
+          const drift = holder.position.distanceTo(placedPos0);
+          log(`[${t}s] 锚点Δ=${drift.toFixed(2)}m 视点↔模型=${dV.toFixed(2)}m 命中=${window.paddy.xr.hit ? '✓' : '×'}`);
+        }
       }
       // suika 式兜底:会话内超 AUTO_PLACE_MS 仍无命中且未放置 → 自动放镜头前方,免用户干等
       if (!placed && !everHit && performance.now() - sessionStartAt > AUTO_PLACE_MS && lastViewerPose) {

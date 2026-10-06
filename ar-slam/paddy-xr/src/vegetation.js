@@ -1,7 +1,7 @@
 // vegetation.js — 稻株 + 树 + 稻草人 + 人物 + 小件(浮萍/草丛/石)
 // 契约:export function buildVegetation(ctx) 返回 THREE.Group
 // 颜色一律取 cfg;随机一律走 ctx.rand(mulberry32 固定种子,确定性)。
-import * as THREE from '../vendor/three.module.min.js?v=20261006132413';
+import * as THREE from '../vendor/three.module.min.js?v=20261006134713';
 
 // 单株稻苗 = 3 片交叉面片(手工合并,不依赖 BufferGeometryUtils)
 function bladeGeometry() {
