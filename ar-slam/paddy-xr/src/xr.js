@@ -3,8 +3,8 @@
 // 主路径:hit-test(point+plane)→ 绿圈指示 → 点屏放置 → XRAnchor 每帧跟随漂移校正;再点屏换位置
 // 借鉴 dmvrg/webxr-ar-suika 三细节:①会话 8s 无命中自动兜底摆位(免操作)②pixelRatio 封顶+单向降级 ③放置 pop-in 动画(零库自实现,不用 GSAP)
 // 反面教材已规避:suika 用 three 默认 local-floor 参考空间——本机(OPPO)只支持 local/viewer,显式 'local' 否则黑屏(W2 踩坑)
-import * as THREE from '../vendor/three.module.min.js?v=20261006134713';
-import { parseParams, loadCfg, applyEnvironment, addLights, buildModules } from './scene-common.js?v=20261006134713';
+import * as THREE from '../vendor/three.module.min.js?v=20261006140150';
+import { parseParams, loadCfg, applyEnvironment, addLights, buildModules } from './scene-common.js?v=20261006140150';
 
 const SCENE_WIDTH_M = 0.5;        // 桌面放置真实宽度(m)。沿用 W2 尺度假设(MindAR 卡宽 21cm 太小),实测后再调
 const AUTO_PLACE_MS = 25000;      // suika 式兜底:会话内无命中超过此时长自动放镜头前方。A1 实测首命中 19.1s,8s 给早了(迭代③)
@@ -113,8 +113,10 @@ async function start() {
   // ---- XR session 状态 ----
   let xrSession = null;
   let hitTestSource = null;
+  let hitTestSourceLocal = null; // 迭代④:对照路
   let localSpace = null;
   let placedAnchor = null;
+  let pendingAnchorPos = null; // 迭代④:锚点创建排队到下一个有效 XRFrame(select 事件帧 lastFrame 已失效,真机实锤)
   let placed = false;
   let everHit = false;
   let sessionStartAt = 0;
@@ -147,7 +149,14 @@ async function start() {
     const viewerSpace = await xrSession.requestReferenceSpace('viewer');
     // entityTypes 默认仅 ['plane'](规范);显式加 'point'——特征点命中对平面检测依赖弱(A1 三路全命中,双保险)
     hitTestSource = await xrSession.requestHitTestSource({ space: viewerSpace, entityTypes: ['point', 'plane'] });
-    log('会话就绪(local refSpace + hitTestSource)');
+    // 迭代④:对照探测——A1 裸 WebXR 命中、本会话 50s 零命中,配置逐项相同。再开一路 local 空间命中源,
+    //  quirky 浏览器实现若只支持其一,日志 5s 打点的 V/L 计数会直接分晓
+    try {
+      hitTestSourceLocal = await xrSession.requestHitTestSource({ space: localSpace, entityTypes: ['point', 'plane'] });
+      log('hitTestSource(viewer+local 双路)就绪');
+    } catch (e) {
+      log('hitTestSource(local) 请求失败(仅 viewer 路): ' + e.name);
+    }
     sessionStartAt = performance.now();
     everHit = false;
 
@@ -155,7 +164,9 @@ async function start() {
     xrSession.addEventListener('end', () => {
       xrSession = null;
       hitTestSource = null;
+      hitTestSourceLocal = null;
       placedAnchor = null;
+      pendingAnchorPos = null;
       entering = false;
       btnEnter.disabled = false;
       document.getElementById('enterwrap').style.display = '';
@@ -200,20 +211,10 @@ async function start() {
     window.paddy.xr.placed = how;
     log('已放置(' + how + ') @ ' + pos.x.toFixed(2) + ',' + pos.y.toFixed(2) + ',' + pos.z.toFixed(2));
 
-    // anchors 可用则创建世界锚点,抗 ARCore 漂移校正;重放时先删旧锚
+    // anchors 可用则创建世界锚点,抗 ARCore 漂移校正;重放时先删旧锚。
+    // 迭代④:统一排队到下一个 rAF——XRFrame 仅在回调内有效,select 事件帧里直接 createAnchor 必抛(真机实锤)
     if (placedAnchor) { try { placedAnchor.delete(); } catch {} placedAnchor = null; }
-    if (xrSession && xrSession.enabledFeatures.includes('anchors') && lastFrame) {
-      const xf = new XRRigidTransform({ x: pos.x, y: pos.y, z: pos.z });
-      try {
-        // 迭代③:select 事件帧里 lastFrame 可能已失效(XRFrame 仅在 rAF 回调内有效),包 try 防同步抛错
-        lastFrame.createAnchor(xf, localSpace)
-          .then((a) => { placedAnchor = a; window.paddy.xr.anchor = true; log('锚点已创建'); })
-          .catch((e) => { window.paddy.xr.anchor = 'failed(静态放置)'; log('锚点创建失败(静态放置): ' + e.message); });
-      } catch (e) {
-        window.paddy.xr.anchor = 'failed(帧失效)';
-        log('createAnchor 同步抛错(帧已失效,静态放置): ' + e.message);
-      }
-    }
+    pendingAnchorPos = pos.clone();
     placedPos0 = pos.clone(); // 漂移采样基准(迭代③)
   }
 
@@ -248,10 +249,23 @@ async function start() {
     const dt = Math.min(clock.getDelta(), 0.05);
     if (frame && hitTestSource && localSpace) {
       lastViewerPose = frame.getViewerPose(localSpace); // 每帧缓存,放置用最新位姿(不在事件帧取)
-      const hits = frame.getHitTestResults(hitTestSource);
+      // 迭代④:排队的锚点在有效帧内创建
+      if (pendingAnchorPos) {
+        const pos = pendingAnchorPos;
+        pendingAnchorPos = null;
+        if (xrSession.enabledFeatures.includes('anchors')) {
+          const xf = new XRRigidTransform({ x: pos.x, y: pos.y, z: pos.z });
+          frame.createAnchor(xf, localSpace)
+            .then((a) => { placedAnchor = a; window.paddy.xr.anchor = true; log('锚点已创建'); })
+            .catch((e) => { window.paddy.xr.anchor = 'failed(静态放置)'; log('锚点创建失败(静态放置): ' + e.message); });
+        }
+      }
+      const hitsV = frame.getHitTestResults(hitTestSource);
+      const hitsL = hitTestSourceLocal ? frame.getHitTestResults(hitTestSourceLocal) : [];
+      const hits = hitsV.length ? hitsV : hitsL; // 优先 viewer 路
       if (hits.length > 0) {
         if (!everHit) { // 迭代③:首命中打点+震动(会话内 DOM 不可见,震动=唯一非文字反馈)
-          log(`hit-test 首命中 @ ${((performance.now() - sessionStartAt) / 1000).toFixed(1)}s(共 ${hits.length} 个)`);
+          log(`hit-test 首命中 @ ${((performance.now() - sessionStartAt) / 1000).toFixed(1)}s(${hitsV.length ? 'viewer' : 'local'}路,共 ${hits.length} 个)`);
           navigator.vibrate?.(60);
         }
         everHit = true;
@@ -273,7 +287,7 @@ async function start() {
         lastStatAt = nowMs;
         const t = ((nowMs - sessionStartAt) / 1000).toFixed(0);
         if (!placed) {
-          log(`[${t}s] 找平面中… 本帧命中=${hits.length} viewerPose=${lastViewerPose ? 'OK' : 'null'}`);
+          log(`[${t}s] 找平面中… 命中V/L=${hitsV.length}/${hitsL.length} viewerPose=${lastViewerPose ? 'OK' : 'null'}`);
         } else if (lastViewerPose && placedPos0) {
           const vp = lastViewerPose.transform.position;
           const dV = Math.hypot(vp.x - holder.position.x, vp.y - holder.position.y, vp.z - holder.position.z);

@@ -1,7 +1,7 @@
 // terrain.js — 底座 + 远山/近山 + 田块/田埂/水口 + 田面水镜 + 田埂小路
 // 契约:export function buildTerrain(ctx) -> THREE.Group
 // ctx = { THREE, toon, M, B, C, outline, textTex, rand, cfg };一切随机走 ctx.rand,一切颜色/尺寸走 cfg
-import * as THREE from '../vendor/three.module.min.js?v=20261006134713';
+import * as THREE from '../vendor/three.module.min.js?v=20261006140150';
 
 export function buildTerrain(ctx) {
   const { toon, M, B, C, textTex, rand, cfg } = ctx;
