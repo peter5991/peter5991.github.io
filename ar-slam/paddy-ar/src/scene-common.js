@@ -1,10 +1,10 @@
 // scene-common.js — index.html(网页版)与 ar.html(D4 AR 版)共用的场景装配层
 // 抽取自 main.js(D4),纯代码搬移逐语句等价;rest 像素等价由 diff oracle 守护
 import * as THREE from '../vendor/three.module.min.js';
-import { toon, outline as outlineRaw, M, B, C, textTex, mulberry32 } from './toon.js?v=20261008103654';
-import { buildTerrain } from './terrain.js?v=20261008103654';
-import { buildArchitecture } from './architecture.js?v=20261008103654';
-import { buildVegetation } from './vegetation.js?v=20261008103654';
+import { toon, outline as outlineRaw, M, B, C, textTex, mulberry32 } from './toon.js?v=20261008104733';
+import { buildTerrain } from './terrain.js?v=20261008104733';
+import { buildArchitecture } from './architecture.js?v=20261008104733';
+import { buildVegetation } from './vegetation.js?v=20261008104733';
 
 // URL 参数:?season=&time= 选分支;?anim=off 冻结 rest;?t=<秒> 钉死时钟(优先于 anim=off)
 export function parseParams(search) {
@@ -19,7 +19,7 @@ export function parseParams(search) {
 
 // 配置:?season=&time= 选分支,查不到回退 spring.day;sizes 顶层共享(D2 spec-d2 §1)
 export async function loadCfg(season, time) {
-  const res = await fetch('./config/scene.json?v=20261008103654');
+  const res = await fetch('./config/scene.json?v=20261008104733');
   if (!res.ok) throw new Error('config/scene.json 加载失败: HTTP ' + res.status);
   const config = await res.json();
   let variant = config.seasons && config.seasons[season] && config.seasons[season][time];

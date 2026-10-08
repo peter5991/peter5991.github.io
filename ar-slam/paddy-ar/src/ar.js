@@ -3,7 +3,7 @@
 // 遥测三件套(M3 D5):window.__paddy 句柄 + dataset 关键指标 + 屏上 debug 角标(手机联调替代 console)
 import * as THREE from '../vendor/three.module.min.js';
 import { MindARThree } from '../vendor/mindar-image-three.prod.js';
-import { parseParams, loadCfg, applyEnvironment, addLights, buildModules } from './scene-common.js?v=20261008103654';
+import { parseParams, loadCfg, applyEnvironment, addLights, buildModules } from './scene-common.js?v=20261008104733';
 
 const DPR_STEPS = [1.5, 1.25, 1.0]; // M3 D8:自适应 DPR 单向降级,永不回升
 const FPS_TARGET = 28;              // 降级触发线(验收线 ≥30,留 2 帧余量)

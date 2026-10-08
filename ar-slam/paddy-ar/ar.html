@@ -5,7 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>水稻田微缩场景 D4·AR</title>
 <style>
-  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #20242c; }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  html { background: #20242c; }
+  /* body 必须透明:MindAR 的 <video> 是 body 下 z-index:-2 的子元素,body 自带不透明背景会把它整个盖住(摄像头黑屏、透明 WebGL 画布上的模型却照常显示) */
+  body { background: transparent; }
   canvas { display: block; }
   #loading {
     position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -155,6 +158,6 @@
     }
   })();
 </script>
-<script type="module" src="./src/ar.js?v=20261008103654"></script>
+<script type="module" src="./src/ar.js?v=20261008104733"></script>
 </body>
 </html>
