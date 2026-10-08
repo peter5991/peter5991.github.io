@@ -3,8 +3,8 @@
 // 主路径:hit-test(point+plane)→ 绿圈指示 → 点屏放置 → XRAnchor 每帧跟随漂移校正;再点屏换位置
 // 借鉴 dmvrg/webxr-ar-suika 三细节:①会话 8s 无命中自动兜底摆位(免操作)②pixelRatio 封顶+单向降级 ③放置 pop-in 动画(零库自实现,不用 GSAP)
 // 反面教材已规避:suika 用 three 默认 local-floor 参考空间——本机(OPPO)只支持 local/viewer,显式 'local' 否则黑屏(W2 踩坑)
-import * as THREE from '../vendor/three.module.min.js?v=20261008091313';
-import { parseParams, loadCfg, applyEnvironment, addLights, buildModules } from './scene-common.js?v=20261008091313';
+import * as THREE from '../vendor/three.module.min.js?v=20261008093700';
+import { parseParams, loadCfg, applyEnvironment, addLights, buildModules } from './scene-common.js?v=20261008093700';
 
 const SCENE_WIDTH_M = 0.5;        // 桌面放置真实宽度(m)。沿用 W2 尺度假设(MindAR 卡宽 21cm 太小),实测后再调
 const AUTO_PLACE_MS = 25000;      // suika 式兜底:会话内无命中超过此时长自动放镜头前方。A1 实测首命中 19.1s,8s 给早了(迭代③)
@@ -26,7 +26,7 @@ function log(msg) {
 }
 
 async function start() {
-  log('页面加载完成,开始初始化 three r' + THREE.REVISION);
+  log('页面加载完成,开始初始化 three r' + THREE.REVISION + ' | 构建=迭代⑥ | 脚本=' + import.meta.url.split('/').slice(-2).join('/'));
   const { season, time, tParam, animOn: animOnParam } = parseParams(location.search);
   log(`参数: season=${season} time=${time} anim=${animOnParam ? 'on' : 'off'} t=${tParam}`);
   const { cfg, usedSeason, usedTime } = await loadCfg(season, time);
@@ -116,7 +116,7 @@ async function start() {
   let hitTestSourceLocal = null; // 迭代④:对照路
   let localSpace = null;
   let placedAnchor = null;
-  let pendingAnchorPos = null; // 迭代④:锚点创建排队到下一个有效 XRFrame(select 事件帧 lastFrame 已失效,真机实锤)
+  let pendingAnchor = null; // {pos, preferHit} 迭代④:锚点创建排队到下一个有效 XRFrame(select 事件帧 lastFrame 已失效,真机实锤)
   let placed = false;
   let everHit = false;
   let sessionStartAt = 0;
@@ -174,7 +174,7 @@ async function start() {
       hitTestSource = null;
       hitTestSourceLocal = null;
       placedAnchor = null;
-      pendingAnchorPos = null;
+      pendingAnchor = null;
       entering = false;
       btnEnter.disabled = false;
       document.getElementById('enterwrap').style.display = '';
@@ -222,14 +222,19 @@ async function start() {
     // anchors 可用则创建世界锚点,抗 ARCore 漂移校正;重放时先删旧锚。
     // 迭代④:统一排队到下一个 rAF——XRFrame 仅在回调内有效,select 事件帧里直接 createAnchor 必抛(真机实锤)
     if (placedAnchor) { try { placedAnchor.delete(); } catch {} placedAnchor = null; }
-    pendingAnchorPos = pos.clone();
+    pendingAnchor = { pos: pos.clone(), preferHit: how === 'hit' };
     placedPos0 = pos.clone(); // 漂移采样基准(迭代③)
+    placedViewer0 = lastViewerPose ? lastViewerPose.transform.position : null; // 迭代⑥:视点位移基准
+    anchorNullFrames = 0;
   }
 
   // ---- 帧循环 ----
   let lastHitPose = null;
   let lastViewerPose = null;
   let lastFrame = null;
+  let placedViewer0 = null; // 迭代⑥
+  let lossAt = 0; // 迭代⑥:追踪丢失起点(ms),0=正常
+  let anchorNullFrames = 0; // 迭代⑥:放置后锚点位姿取不到(未追踪)的帧数
   let placedPos0 = null;   // 漂移采样基准(迭代③)
   let lastStatAt = 0;      // 周期打点计时
   const clock = new THREE.Clock();
@@ -257,20 +262,34 @@ async function start() {
     const dt = Math.min(clock.getDelta(), 0.05);
     if (frame && hitTestSource && localSpace) {
       lastViewerPose = frame.getViewerPose(localSpace); // 每帧缓存,放置用最新位姿(不在事件帧取)
-      // 迭代④:排队的锚点在有效帧内创建
-      if (pendingAnchorPos) {
-        const pos = pendingAnchorPos;
-        pendingAnchorPos = null;
-        if (xrSession.enabledFeatures.includes('anchors')) {
-          const xf = new XRRigidTransform({ x: pos.x, y: pos.y, z: pos.z });
-          frame.createAnchor(xf, localSpace)
-            .then((a) => { placedAnchor = a; window.paddy.xr.anchor = true; log('锚点已创建'); })
-            .catch((e) => { window.paddy.xr.anchor = 'failed(静态放置)'; log('锚点创建失败(静态放置): ' + e.message); });
-        }
+      // 迭代⑥:追踪丢失/恢复打点(viewerPose=null 即 ARCore 丢追踪;此前该状态无日志,只能从 5s 打点缺行推断)
+      if (!lastViewerPose && !lossAt) { lossAt = performance.now(); log('⚠ 追踪丢失(viewerPose=null)'); }
+      else if (lastViewerPose && lossAt) {
+        log('追踪恢复,丢失 ' + ((performance.now() - lossAt) / 1000).toFixed(1) + 's' + (placed ? ',放置后第 ' + ((performance.now() - sessionStartAt) / 1000).toFixed(0) + 's' : ''));
+        lossAt = 0;
       }
       const hitsV = frame.getHitTestResults(hitTestSource);
       const hitsL = hitTestSourceLocal ? frame.getHitTestResults(hitTestSourceLocal) : [];
       const hits = hitsV.length ? hitsV : hitsL; // 优先 viewer 路
+      // 迭代④:排队的锚点在有效帧内创建。迭代⑥:放置自命中点时优先 hit.createAnchor()(平面锚,随 ARCore 平面精修校正,
+      // 比 localSpace 自由锚稳——xr-diag 迭代③已采用);命中偏离放置点>15cm 或失败则回落自由锚
+      if (pendingAnchor) {
+        const { pos, preferHit } = pendingAnchor;
+        pendingAnchor = null;
+        if (xrSession.enabledFeatures.includes('anchors')) {
+          const done = (a, via) => { placedAnchor = a; window.paddy.xr.anchor = via; log('锚点已创建(' + via + ')'); };
+          const h0 = hits[0];
+          const hp = preferHit && h0 && h0.createAnchor ? h0.getPose(localSpace) : null;
+          const near = hp && Math.hypot(hp.transform.position.x - pos.x, hp.transform.position.y - pos.y, hp.transform.position.z - pos.z) < 0.15;
+          const p = near
+            ? h0.createAnchor().then((a) => done(a, 'plane-hit')).catch((e) => {
+                log('平面锚失败,回落自由锚: ' + e.message);
+                pendingAnchor = { pos, preferHit: false };
+              })
+            : frame.createAnchor(new XRRigidTransform({ x: pos.x, y: pos.y, z: pos.z }), localSpace).then((a) => done(a, 'free'));
+          p.catch((e) => { window.paddy.xr.anchor = 'failed(静态放置)'; log('锚点创建失败(静态放置): ' + e.message); });
+        }
+      }
       if (hits.length > 0) {
         if (!everHit) { // 迭代③:首命中打点+震动(会话内 DOM 不可见,震动=唯一非文字反馈)
           log(`hit-test 首命中 @ ${((performance.now() - sessionStartAt) / 1000).toFixed(1)}s(${hitsV.length ? 'viewer' : 'local'}路,共 ${hits.length} 个)`);
@@ -300,7 +319,8 @@ async function start() {
           const vp = lastViewerPose.transform.position;
           const dV = Math.hypot(vp.x - holder.position.x, vp.y - holder.position.y, vp.z - holder.position.z);
           const drift = holder.position.distanceTo(placedPos0);
-          log(`[${t}s] 锚点Δ=${drift.toFixed(2)}m 视点↔模型=${dV.toFixed(2)}m 命中=${window.paddy.xr.hit ? '✓' : '×'}`);
+          const travel = placedViewer0 ? Math.hypot(vp.x - placedViewer0.x, vp.y - placedViewer0.y, vp.z - placedViewer0.z) : 0;
+          log(`[${t}s] 锚点Δ=${drift.toFixed(2)}m 视点↔模型=${dV.toFixed(2)}m 放置后视点位移=${travel.toFixed(2)}m 锚点丢失帧=${anchorNullFrames} emulated=${lastViewerPose.emulatedPosition} 命中=${window.paddy.xr.hit ? '✓' : '×'}`);
         }
       }
       // suika 式兜底:会话内超 AUTO_PLACE_MS 仍无命中且未放置 → 自动放镜头前方,免用户干等
@@ -310,6 +330,7 @@ async function start() {
       // 每帧从锚点取位姿,跟随 ARCore 漂移校正
       if (placed && placedAnchor) {
         const pose = frame.getPose(placedAnchor.anchorSpace, localSpace);
+        if (!pose) anchorNullFrames++;
         if (pose) {
           anchorMat.fromArray(pose.transform.matrix);
           holder.position.setFromMatrixPosition(anchorMat);
