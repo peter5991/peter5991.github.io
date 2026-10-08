@@ -3,7 +3,7 @@
 // 遥测三件套(M3 D5):window.__paddy 句柄 + dataset 关键指标 + 屏上 debug 角标(手机联调替代 console)
 import * as THREE from '../vendor/three.module.min.js';
 import { MindARThree } from '../vendor/mindar-image-three.prod.js';
-import { parseParams, loadCfg, applyEnvironment, addLights, buildModules } from './scene-common.js?v=20261008144729';
+import { parseParams, loadCfg, applyEnvironment, addLights, buildModules } from './scene-common.js?v=20261008150638';
 
 const DPR_STEPS = [1.5, 1.25, 1.0]; // M3 D8:自适应 DPR 单向降级,永不回升
 const FPS_TARGET = 28;              // 降级触发线(验收线 ≥30,留 2 帧余量)
@@ -22,9 +22,12 @@ async function start() {
   let animOn = animOnParam;
 
   // MindARThree 自建 renderer/scene/camera;摄像头视频走 DOM 衬底,WebGL 画布透明叠其上
+  // missTolerance:丢失容忍帧数(默认 5≈0.1s 太短,斜视瞬间即隐藏)。丢失帧内按最后位姿保持显示,
+  // 30≈0.5s@60fps 可桥接倾斜/出视野的短暂丢失;结构性限制(图卡必须可见)无法靠参数根除
   const mindarThree = new MindARThree({
     container: document.body,
     imageTargetSrc: './assets/paddy-card.mind',
+    missTolerance: 30,
   });
   const { renderer, scene, camera } = mindarThree;
   let dprStep = 0;
@@ -39,7 +42,7 @@ async function start() {
     window.__reportErr && window.__reportErr('WebGL context lost');
   });
 
-  applyEnvironment(renderer, scene, cfg, { background: false }); // AR 画布透明;雾距离 30+ 在锚点尺度下天然惰性
+  applyEnvironment(renderer, scene, cfg, { background: false, fog: false }); // AR 画布透明;雾按世界单位算,MindAR 相机距离 100+ 会 100% 雾化(白模根因),必须关
 
   // 模块装配后整体挂锚点;灯光放 diorama 组内——随内容同旋转,保住 D2 验收的相对光照
   stage('装配场景模块…');
