@@ -3,8 +3,8 @@
 // 主路径:hit-test(point+plane)→ 绿圈指示 → 点屏放置 → XRAnchor 每帧跟随漂移校正;再点屏换位置
 // 借鉴 dmvrg/webxr-ar-suika 三细节:①会话 8s 无命中自动兜底摆位(免操作)②pixelRatio 封顶+单向降级 ③放置 pop-in 动画(零库自实现,不用 GSAP)
 // 反面教材已规避:suika 用 three 默认 local-floor 参考空间——本机(OPPO)只支持 local/viewer,显式 'local' 否则黑屏(W2 踩坑)
-import * as THREE from '../vendor/three.module.min.js?v=20261008093700';
-import { parseParams, loadCfg, applyEnvironment, addLights, buildModules } from './scene-common.js?v=20261008093700';
+import * as THREE from '../vendor/three.module.min.js?v=20261008094644';
+import { parseParams, loadCfg, applyEnvironment, addLights, buildModules } from './scene-common.js?v=20261008094644';
 
 const SCENE_WIDTH_M = 0.5;        // 桌面放置真实宽度(m)。沿用 W2 尺度假设(MindAR 卡宽 21cm 太小),实测后再调
 const AUTO_PLACE_MS = 25000;      // suika 式兜底:会话内无命中超过此时长自动放镜头前方。A1 实测首命中 19.1s,8s 给早了(迭代③)
@@ -12,6 +12,9 @@ const FALLBACK_FORWARD_M = 1.2;   // 兜底放置:镜头水平前方距离
 const FALLBACK_DROP_M = 1.0;      // 兜底放置:视点下方估测桌面高度
 const POP_DURATION = 0.3;         // 放置 pop-in 时长(s)
 const DPR_STEPS = [1.5, 1.25, 1.0]; // M3 D8:自适应 DPR 单向降级,永不回升(首档即 suika 式封顶)
+// 迭代⑦:默认自由锚。迭代⑥真机:平面锚在用户近乎静止时跳变 23cm,后退抬机后平面不可见→锚点位姿取不到(丢失帧 251)。
+// 自由锚只依赖 VIO,不依赖平面是否可见(迭代⑤实测Δ≤0.04m)。?anchor=plane 保留平面锚做对照
+const PLANE_ANCHOR = new URLSearchParams(location.search).get('anchor') === 'plane';
 const FPS_TARGET = 28;            // 降级触发线(验收线 ≥30,留 2 帧余量)
 
 function easeOutBack(t) { // pop-in 缓动(零库;suika 用 GSAP power2.out,此处带轻微回弹更"放上去"感)
@@ -26,7 +29,7 @@ function log(msg) {
 }
 
 async function start() {
-  log('页面加载完成,开始初始化 three r' + THREE.REVISION + ' | 构建=迭代⑥ | 脚本=' + import.meta.url.split('/').slice(-2).join('/'));
+  log('页面加载完成,开始初始化 three r' + THREE.REVISION + ' | 构建=迭代⑦ | 脚本=' + import.meta.url.split('/').slice(-2).join('/'));
   const { season, time, tParam, animOn: animOnParam } = parseParams(location.search);
   log(`参数: season=${season} time=${time} anim=${animOnParam ? 'on' : 'off'} t=${tParam}`);
   const { cfg, usedSeason, usedTime } = await loadCfg(season, time);
@@ -222,7 +225,7 @@ async function start() {
     // anchors 可用则创建世界锚点,抗 ARCore 漂移校正;重放时先删旧锚。
     // 迭代④:统一排队到下一个 rAF——XRFrame 仅在回调内有效,select 事件帧里直接 createAnchor 必抛(真机实锤)
     if (placedAnchor) { try { placedAnchor.delete(); } catch {} placedAnchor = null; }
-    pendingAnchor = { pos: pos.clone(), preferHit: how === 'hit' };
+    pendingAnchor = { pos: pos.clone(), preferHit: PLANE_ANCHOR && how === 'hit' };
     placedPos0 = pos.clone(); // 漂移采样基准(迭代③)
     placedViewer0 = lastViewerPose ? lastViewerPose.transform.position : null; // 迭代⑥:视点位移基准
     anchorNullFrames = 0;
