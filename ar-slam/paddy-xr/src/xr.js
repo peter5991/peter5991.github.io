@@ -3,8 +3,8 @@
 // 主路径:hit-test(point+plane)→ 绿圈指示 → 点屏放置 → XRAnchor 每帧跟随漂移校正;再点屏换位置
 // 借鉴 dmvrg/webxr-ar-suika 三细节:①会话 8s 无命中自动兜底摆位(免操作)②pixelRatio 封顶+单向降级 ③放置 pop-in 动画(零库自实现,不用 GSAP)
 // 反面教材已规避:suika 用 three 默认 local-floor 参考空间——本机(OPPO)只支持 local/viewer,显式 'local' 否则黑屏(W2 踩坑)
-import * as THREE from '../vendor/three.module.min.js?v=20261006140150';
-import { parseParams, loadCfg, applyEnvironment, addLights, buildModules } from './scene-common.js?v=20261006140150';
+import * as THREE from '../vendor/three.module.min.js?v=20261008090944';
+import { parseParams, loadCfg, applyEnvironment, addLights, buildModules } from './scene-common.js?v=20261008090944';
 
 const SCENE_WIDTH_M = 0.5;        // 桌面放置真实宽度(m)。沿用 W2 尺度假设(MindAR 卡宽 21cm 太小),实测后再调
 const AUTO_PLACE_MS = 25000;      // suika 式兜底:会话内无命中超过此时长自动放镜头前方。A1 实测首命中 19.1s,8s 给早了(迭代③)
@@ -144,6 +144,14 @@ async function start() {
       return;
     }
     log('requestSession 成功 enabledFeatures: ' + [...xrSession.enabledFeatures].join(','));
+    // 迭代⑤:渲染层对齐 xr-diag——three r185 的 setSession 探测到 XRWebGLBinding.createProjectionLayer 就走 Layers API
+    // (updateRenderState({layers})),xr-diag 用 XRWebGLLayer baseLayer(同机 280/280 命中)。这是迭代④判别实验里
+    // "仅剩 GL 层创建方式"的那一项差异。默认走 baseLayer;?layers=1 可切回 Layers 做 A/B。
+    const layersApi = typeof XRWebGLBinding !== 'undefined' && 'createProjectionLayer' in XRWebGLBinding.prototype;
+    if (layersApi && new URLSearchParams(location.search).get('layers') !== '1') {
+      delete XRWebGLBinding.prototype.createProjectionLayer; // three 内部以 in 判定,删掉即回落 baseLayer 路
+    }
+    log('渲染层: ' + ('createProjectionLayer' in (window.XRWebGLBinding ? XRWebGLBinding.prototype : {}) ? 'Layers API' : 'baseLayer(XRWebGLLayer)'));
     await renderer.xr.setSession(xrSession);
     localSpace = await xrSession.requestReferenceSpace('local');
     const viewerSpace = await xrSession.requestReferenceSpace('viewer');
