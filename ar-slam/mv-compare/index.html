@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>model-viewer 对照测试</title>
+<style>
+  body { margin: 0; background: #20242c; color: #cfd4de; font: 14px/1.7 -apple-system, "Noto Sans SC", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 18px; margin: 4px 0 8px; }
+  .box { background: #2a2f39; border-radius: 10px; padding: 12px 14px; margin: 12px 0; }
+  .box b { color: #f2efe6; }
+  model-viewer { width: 100%; height: 260px; background: #2a2f39; border-radius: 10px; --poster-color: transparent; }
+  .arbtn { display: block; width: 100%; box-sizing: border-box; margin-top: 8px; border: 0; background: #4e4438; color: #f2efe6;
+    padding: 14px; border-radius: 999px; font-size: 16px; letter-spacing: 3px; }
+  #log { white-space: pre-wrap; word-break: break-all; font: 11px/1.5 monospace; max-height: 30vh; overflow-y: auto; }
+  button.copy { border: 1px solid #555; background: transparent; color: #cfd4de; border-radius: 6px; padding: 4px 12px; font-size: 12px; }
+  ol { padding-left: 1.3em; margin: 6px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>model-viewer 对照测试</h1>
+  <div class="box">
+    <b>目的</b>:同一台手机、同一个沙盘(缩到 0.5m,与 D5 页同尺度),看 model-viewer 的 AR 会不会也"放置后飘走"。<br>
+    <b>怎么做</b>(两个按钮各做一遍,做法完全相同):
+    <ol>
+      <li>点 AR 按钮,对准<b>桌面/地面</b>,按提示放置沙盘</li>
+      <li>在桌面上用<b>胶带或杯子</b>标出沙盘所在位置</li>
+      <li><b>人不要走动</b>,只把手机从上下左右不同角度(含斜视)对着同一平面看 30 秒</li>
+      <li>再慢慢后退 1~2 米,保持斜视</li>
+      <li>看沙盘相对参照物:<b>贴着 / 慢慢滑走 / 突然跳走</b>,偏了大约多少厘米</li>
+    </ol>
+  </div>
+
+  <div class="box"><b>A. WebXR 模式</b>(浏览器 WebXR,与 D5 页同一套接口——最直接的对照)
+    <model-viewer id="mvA" src="./paddy-sandbox.glb" ar ar-modes="webxr" ar-placement="floor" ar-scale="fixed"
+      camera-controls touch-action="pan-y" shadow-intensity="0.6" alt="稻田沙盘">
+      <button slot="ar-button" class="arbtn">A · 进入 AR (WebXR)</button>
+    </model-viewer>
+  </div>
+
+  <div class="box"><b>B. Scene Viewer 模式</b>(Google 原生 ARCore 应用,不走浏览器 WebXR——用来区分"Chrome 的问题"还是"手机/ARCore 本身的问题")
+    <model-viewer id="mvB" src="./paddy-sandbox.glb" ar ar-modes="scene-viewer" ar-placement="floor" ar-scale="fixed"
+      camera-controls touch-action="pan-y" shadow-intensity="0.6" alt="稻田沙盘">
+      <button slot="ar-button" class="arbtn">B · 进入 AR (Scene Viewer)</button>
+    </model-viewer>
+  </div>
+
+  <div class="box"><b>页面日志</b> <button class="copy" id="copy">复制</button>
+    <div id="log"></div>
+  </div>
+</main>
+<script type="module" src="./model-viewer.min.js"></script>
+<script>
+  var logEl = document.getElementById('log');
+  function log(m) { logEl.textContent += '[' + (performance.now() / 1000).toFixed(1) + 's] ' + m + '\n'; }
+  log('构建=mv-compare-1 | model-viewer 4.0.0 | UA=' + navigator.userAgent);
+  ['mvA', 'mvB'].forEach(function (id) {
+    var el = document.getElementById(id), tag = id === 'mvA' ? 'A' : 'B';
+    el.addEventListener('load', function () {
+      var d = el.getDimensions(); // 米(量化 glb 经 three 还原后的真实包围盒)
+      var k = 0.5 / Math.max(d.x, d.z);
+      el.scale = k + ' ' + k + ' ' + k;
+      log(tag + ' 模型载入,原尺寸 ' + d.x.toFixed(2) + '×' + d.y.toFixed(2) + '×' + d.z.toFixed(2) + 'm → 缩放 ' + k.toFixed(4) + ' 使宽=0.5m');
+    });
+    el.addEventListener('error', function (e) { log(tag + ' 错误: ' + JSON.stringify(e.detail)); });
+    el.addEventListener('ar-status', function (e) { log(tag + ' ar-status=' + e.detail.status); });
+    el.addEventListener('ar-tracking', function (e) { log(tag + ' ar-tracking=' + e.detail.status); });
+  });
+  document.getElementById('copy').addEventListener('click', function () {
+    navigator.clipboard && navigator.clipboard.writeText(logEl.textContent);
+    this.textContent = '已复制'; var b = this; setTimeout(function () { b.textContent = '复制'; }, 1500);
+  });
+  setTimeout(function () {
+    var a = document.getElementById('mvA');
+    log('A 支持 AR 模式: ' + (a.canActivateAR ? 'canActivateAR=true' : 'canActivateAR=false'));
+    log('B 支持 AR 模式: ' + (document.getElementById('mvB').canActivateAR ? 'canActivateAR=true' : 'canActivateAR=false'));
+  }, 3000);
+</script>
+</body>
+</html>

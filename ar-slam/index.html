@@ -39,6 +39,12 @@ footer a{border-bottom:1px solid #333}
 </header>
 
 <main>
+  <a class="milestone" href="mv-compare/index.html?v=mv1">
+    <div class="row"><span class="name">对照 · model-viewer（同机 AR 稳定性）</span><span class="badge doing">待真机</span></div>
+    <p class="desc">判别 D5 "放置后飘走"是 xr.js 会话配置问题还是设备/ARCore 限制。同一沙盘（宽 0.5m）两种模式：A=浏览器 WebXR（与 D5 同接口）；B=Scene Viewer（原生 ARCore，不经 Chrome）。做法相同：放置→桌面标记位置→人不动，多角度（含斜视）看 30s→慢退 1~2m。</p>
+    <p class="accept">A、B 各报：贴着 / 慢滑 / 突跳 + 偏移约几 cm；复制页面日志。A 稳 → 查 xr.js 会话配置；A 也飘 B 稳 → Chrome 层问题；都飘 → 设备限制，转图卡</p>
+  </a>
+
   <a class="milestone" href="paddy-xr/xr.html?v=20261008094644">
     <div class="row"><span class="name">D5 · WebXR 空间放置（稻田沙盘）</span><span class="badge doing">待真机</span></div>
     <p class="desc">A1 判定落地：D1~D3 沙盘场景直接空间放置。hit-test（point+plane）→ 绿圈指示 → 点屏放置 → XRAnchor 每帧跟随；再点屏换位置。8s 无命中自动兜底放镜头前方；pixelRatio 封顶 1.5 起 + 单向降级；放置 pop-in 动画。桌面冒烟已通过（场景装配/遥测/Fail Loud）。</p>
