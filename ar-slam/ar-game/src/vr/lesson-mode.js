@@ -1,20 +1,20 @@
 // lesson-mode.js — 讲解模式:锁定输入,镜头接管给时间轴 cam.*;字幕/章节/参与门/跳过/回归
 // 复用 lesson-core(magnifier/specimen)+ vr-field(按簇枯黄/虫群/定位圈);埋点走 analytics.track
 // 可选参数(默认保持 VR 行为):
-//   url          时间轴 JSON(默认 /lessons/vr-planthopper.json?v=20261011154851)
+//   url          时间轴 JSON(默认相对 ./lessons/vr-planthopper.json?v=20261011155356,部署到子路径也能解析)
 //   onCam        传入后不再直驱相机,改为 onCam(P, snapshot) 回调(AR 侧接软引导)
 //   trackPrefix  埋点事件前缀(默认 'vr',AR 传 'ar')
 //   magScale/specScale  放大镜/标本整体缩放(AR 视距远,可调大)
-import * as THREE from '../../vendor/three.module.js?v=20261011154851';
-import { loadTimeline } from '../lesson-core/timeline.js?v=20261011154851';
-import { buildMagnifier } from '../lesson-core/magnifier.js?v=20261011154851';
-import { buildSpecimen } from '../lesson-core/specimen.js?v=20261011154851';
-import { buildSwarm, buildMarker } from './vr-field.js?v=20261011154851';
-import { track } from '../analytics.js?v=20261011154851';
+import * as THREE from '../../vendor/three.module.js?v=20261011155356';
+import { loadTimeline } from '../lesson-core/timeline.js?v=20261011155356';
+import { buildMagnifier } from '../lesson-core/magnifier.js?v=20261011155356';
+import { buildSpecimen } from '../lesson-core/specimen.js?v=20261011155356';
+import { buildSwarm, buildMarker } from './vr-field.js?v=20261011155356';
+import { track } from '../analytics.js?v=20261011155356';
 
 const BUBBLE_LIFT = 0.8; // 放大镜球心高出稻簇的世界高度(v4 稻簇高 ~0.45,球已缩到 ~0.075 倍)
 
-export async function createLessonMode({ scene, camera, ui, damage, url = '/lessons/vr-planthopper.json?v=20261011154851',
+export async function createLessonMode({ scene, camera, ui, damage, url = './lessons/vr-planthopper.json?v=20261011155356',
   onCam = null, trackPrefix = 'vr', magScale = 0.075, specScale = 0.16 }) {
   const tl = await loadTimeline(url);
   const trigger = tl.trigger;
