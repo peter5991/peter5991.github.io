@@ -1,0 +1,52 @@
+{
+  "id": "ar-hotspots",
+  "title": "稻田沙盘",
+  "spots": [
+    {
+      "id": "planthopper",
+      "kind": "lesson",
+      "lesson": "/lessons/vr-planthopper.json",
+      "point": [1.5, 0.34, 0.18],
+      "title": "稻飞虱",
+      "subtitle": "水稻病虫害课 · AR 沙盘版",
+      "icon": "!"
+    },
+    {
+      "id": "blast",
+      "kind": "card",
+      "point": [-1.41, 0.3, -0.16],
+      "title": "稻瘟病",
+      "icon": "?",
+      "lines": [
+        "叶子上长梭形的斑，一圈黄一圈灰。",
+        "严重时稻穗颈折断，整穗变白。",
+        "阴雨天最容易暴发，要早预防。"
+      ]
+    },
+    {
+      "id": "sheath-blight",
+      "kind": "card",
+      "point": [0.9, 0.3, 0.61],
+      "title": "纹枯病",
+      "icon": "?",
+      "lines": [
+        "从水边的叶鞘开始，长云纹样的斑。",
+        "斑往上爬，叶子一片片枯掉。",
+        "水太深、苗太密最容易得。"
+      ]
+    },
+    {
+      "id": "leaf-folder",
+      "kind": "card",
+      "point": [-1.66, 0.3, 1.58],
+      "title": "稻纵卷叶螟",
+      "icon": "?",
+      "lines": [
+        "幼虫把稻叶卷成筒，躲在里面吃。",
+        "叶子被吃得发白，像刮过一层皮。",
+        "看到卷叶就要查虫，趁小治。"
+      ]
+    }
+  ],
+  "review": "信息卡文案为大白话草稿，待专家审"
+}

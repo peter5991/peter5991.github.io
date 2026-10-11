@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+  <title>AR 农学 · 稻田沙盘</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #22303c;
+      font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-user-select: none; user-select: none; touch-action: none; }
+
+    /* ---------- 桌面手机外框:框内才是“取景画面” ---------- */
+    #frameBg { position: fixed; inset: 0;
+      background: radial-gradient(120% 100% at 50% 0%, #2c3e50 0%, #141c24 70%); }
+    #phone {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: 100vw; height: 100vh; background: #000;
+    }
+    #phone .cam {
+      position: absolute; inset: 0; overflow: hidden;
+      background: #1a2430 center / cover no-repeat;
+    }
+    #phone .cam video, #phone .cam canvas { position: absolute; inset: 0;
+      width: 100%; height: 100%; object-fit: cover; }
+    #phone .cam canvas { display: block; }
+    #sideHint { display: none; }
+    @media (min-aspect-ratio: 3/4) { /* 桌面/横屏:收进手机壳 */
+      #phone {
+        width: min(92vh * .5, 480px); height: min(92vh, 960px);
+        border-radius: 40px; border: 10px solid #0c0f12;
+        box-shadow: 0 0 0 3px #39434e, 0 24px 80px rgba(0,0,0,.6);
+        overflow: hidden;
+      }
+      #phone::before { /* 刘海 */
+        content: ''; position: absolute; left: 50%; top: 10px; transform: translateX(-50%);
+        width: 34%; height: 22px; background: #0c0f12; border-radius: 0 0 14px 14px; z-index: 50;
+      }
+      #phone .cam { border-radius: 30px; }
+      #sideHint {
+        display: block; position: fixed; right: calc(50% - min(92vh * .5, 480px) / 2 - 24px);
+        bottom: 12%; transform: translateX(100%);
+        color: rgba(255,255,255,.55); font-size: 13px; line-height: 1.9;
+        text-align: right; writing-mode: vertical-rl; letter-spacing: .2em;
+      }
+    }
+
+    /* ---------- 开始页 ---------- */
+    #start {
+      position: absolute; inset: 0; z-index: 60;
+      background: linear-gradient(180deg, rgba(14,26,18,.88), rgba(14,26,18,.96));
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 18px; color: #fff; text-align: center; padding: 24px;
+      transition: opacity .4s;
+    }
+    #start.hide { opacity: 0; pointer-events: none; }
+    #start .t { font-size: clamp(30px, 8vw, 44px); font-weight: 700; letter-spacing: .14em; }
+    #start .s { font-size: 15px; opacity: .8; line-height: 1.8; max-width: 22em; }
+    #btnStart {
+      margin-top: 10px; background: #d69e2e; color: #fff; border: none;
+      font-size: 20px; font-weight: 700; padding: 16px 52px; border-radius: 999px;
+      box-shadow: 0 4px 0 #a5761c, 0 0 0 6px rgba(214,158,46,.25); cursor: pointer;
+    }
+    #startErr { font-size: 13px; color: #ffb84d; line-height: 1.6; max-width: 26em; display: none; }
+
+    /* ---------- 扫描/放置 ---------- */
+    #scanHint {
+      position: absolute; left: 50%; top: 18%; transform: translateX(-50%);
+      background: rgba(20,26,22,.82); color: #ffe9b0; font-size: 15px; line-height: 1.6;
+      padding: 10px 18px; border-radius: 12px; text-align: center; max-width: 78%;
+      display: none; z-index: 20; pointer-events: none;
+    }
+    #reticle {
+      position: absolute; left: 50%; top: 55%; transform: translate(-50%, -50%);
+      width: 74px; height: 74px; display: none; z-index: 20; pointer-events: none;
+      animation: spin 3.2s linear infinite;
+    }
+    #reticle::before { content: ''; position: absolute; inset: 0;
+      border: 2.5px dashed rgba(255,216,74,.9); border-radius: 50%; }
+    #reticle::after { content: ''; position: absolute; left: 50%; top: 50%;
+      width: 8px; height: 8px; margin: -4px; border-radius: 50%; background: #ffd84a; }
+    @keyframes spin { to { transform: translate(-50%,-50%) rotate(360deg); } }
+    .scanning #scanHint, .scanning #reticle { display: block; }
+
+    /* ---------- 探索提示/回正 ---------- */
+    #btnCenter {
+      position: absolute; right: 14px; bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+      width: 52px; height: 52px; border-radius: 50%; z-index: 15;
+      border: 1.5px solid rgba(255,255,255,.3); background: rgba(40,58,46,.72); color: #fff;
+      font-size: 13px; display: none; align-items: center; justify-content: center;
+    }
+    .exploring #btnCenter { display: flex; }
+    #exploreHint {
+      position: absolute; left: 50%; top: 12%; transform: translateX(-50%);
+      background: rgba(20,26,22,.72); color: #ffe9b0; font-size: 13px;
+      padding: 7px 14px; border-radius: 999px; z-index: 15; pointer-events: none;
+      opacity: 0; transition: opacity .4s; white-space: nowrap;
+    }
+    #exploreHint.on { opacity: 1; }
+
+    /* ---------- 讲解模式(与 vr.html 同款) ---------- */
+    #caption {
+      position: absolute; left: 50%; bottom: 15%; transform: translateX(-50%);
+      background: rgba(20,26,22,.82); color: #fff;
+      font-size: clamp(16px, 4.6vw, 21px); line-height: 1.5;
+      padding: 12px 22px; border-radius: 12px; max-width: 84%; text-align: center;
+      opacity: 0; transition: opacity .3s; pointer-events: none; z-index: 20;
+    }
+    #caption.on { opacity: 1; }
+    #titleCard {
+      position: absolute; left: 50%; top: 38%; transform: translate(-50%, -50%);
+      text-align: center; color: #fff; pointer-events: none; opacity: 0; z-index: 20;
+    }
+    #titleCard .t { font-size: clamp(32px, 9vw, 48px); font-weight: 700; letter-spacing: .12em;
+      text-shadow: 0 2px 14px rgba(0,0,0,.45); }
+    #titleCard .s { font-size: clamp(13px, 3.4vw, 17px); opacity: .85; margin-top: 8px; }
+    #dayCard {
+      position: absolute; right: 14px; top: 14px; z-index: 20;
+      background: rgba(20,26,22,.78); color: #ffe9b0;
+      padding: 8px 14px; border-radius: 10px; font-size: 14px; opacity: 0;
+      transition: opacity .3s;
+    }
+    #lessonBar {
+      position: absolute; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+      transform: translateX(-50%); z-index: 20;
+      display: none; align-items: center; gap: 10px;
+      background: rgba(22,30,26,.85); padding: 8px 14px; border-radius: 14px;
+      max-width: 94%;
+    }
+    .lesson #lessonBar { display: flex; }
+    #chapters { display: flex; gap: 4px; }
+    #chapters button {
+      background: transparent; color: rgba(255,255,255,.65); border: none;
+      font-size: 13px; padding: 6px 6px; border-radius: 8px; cursor: pointer; white-space: nowrap;
+    }
+    #chapters button.on { color: #ffd84a; background: rgba(255,216,74,.12); }
+    #time { color: rgba(255,255,255,.6); font-size: 12px; min-width: 74px; text-align: right; }
+    #btnSkip {
+      background: rgba(255,255,255,.12); color: #fff; border: none;
+      padding: 6px 12px; border-radius: 8px; font-size: 13px; cursor: pointer;
+    }
+    #gateWrap {
+      position: absolute; left: 50%; bottom: 26%; transform: translateX(-50%);
+      display: none; flex-direction: column; align-items: center; gap: 14px; z-index: 25;
+    }
+    #gateWrap.on { display: flex; }
+    #gatePrompt {
+      background: rgba(20,26,22,.82); color: #fff;
+      font-size: clamp(16px, 4.6vw, 21px); line-height: 1.5;
+      padding: 12px 22px; border-radius: 12px; text-align: center; max-width: 84%;
+    }
+    #btnGate {
+      background: #d69e2e; color: #fff; border: none;
+      font-size: 19px; font-weight: 700; padding: 16px 44px; border-radius: 999px;
+      box-shadow: 0 4px 0 #a5761c, 0 0 0 6px rgba(214,158,46,.25);
+      cursor: pointer; animation: bob 1.2s ease-in-out infinite;
+    }
+    @keyframes bob { 50% { transform: translateY(-4px); } }
+    .lesson #exploreHint, .lesson #btnCenter { display: none !important; }
+
+    /* ---------- 信息卡 ---------- */
+    #infoCard {
+      position: absolute; left: 50%; bottom: calc(70px + env(safe-area-inset-bottom, 0px));
+      transform: translateX(-50%) translateY(16px); z-index: 30;
+      width: min(84%, 330px);
+      background: rgba(24,32,27,.94); border: 1px solid rgba(255,255,255,.14);
+      border-radius: 16px; padding: 16px 18px 14px; color: #fff;
+      opacity: 0; pointer-events: none; transition: opacity .3s, transform .3s;
+    }
+    #infoCard.on { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+    #infoCard .head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    #infoCard .name { font-size: 18px; font-weight: 700; }
+    #infoCard .badge {
+      font-size: 11px; color: #ffd84a; border: 1px solid rgba(255,216,74,.5);
+      border-radius: 999px; padding: 2px 8px;
+    }
+    #infoCard ul { margin: 0; padding: 0 0 0 1.1em; font-size: 14px; line-height: 1.9; opacity: .92; }
+    #infoCard .close {
+      position: absolute; right: 10px; top: 8px; background: none; border: none;
+      color: rgba(255,255,255,.6); font-size: 20px; cursor: pointer; padding: 4px 8px;
+    }
+  </style>
+</head>
+<body>
+  <div id="frameBg"></div>
+  <div id="phone">
+    <div class="cam" id="camLayer"></div>
+    <div id="sideHint">拖动旋转 · 滚轮缩放 · 点亮点上课</div>
+
+    <!-- 开始页 -->
+    <div id="start">
+      <div class="t">稻田沙盘</div>
+      <div class="s">把手机对准桌面，点一下放下一座稻田。<br>拖动转一转，点亮点，听老乡讲稻飞虱。</div>
+      <button id="btnStart">打开摄像头</button>
+      <div id="startErr"></div>
+    </div>
+
+    <!-- 扫描/放置 -->
+    <div id="scanHint">对准桌面，点一下放下稻田</div>
+    <div id="reticle"></div>
+
+    <!-- 探索 -->
+    <div id="exploreHint">拖动旋转 · 双指缩放 · 点亮点上课</div>
+    <button id="btnCenter">回正</button>
+
+    <!-- 讲解模式 -->
+    <div id="titleCard"><div class="t">稻飞虱</div><div class="s">水稻病虫害课 · AR 沙盘版</div></div>
+    <div id="dayCard">第 <span id="dayNum">1</span> 天</div>
+    <div id="caption"></div>
+    <div id="gateWrap"><div id="gatePrompt"></div><button id="btnGate"></button></div>
+    <div id="lessonBar">
+      <div id="chapters"></div>
+      <div id="time">0:00 / 0:58</div>
+      <button id="btnSkip">跳过</button>
+    </div>
+
+    <!-- 信息卡 -->
+    <div id="infoCard">
+      <button class="close" id="btnCardClose">×</button>
+      <div class="head"><span class="name" id="cardName"></span><span class="badge">完整课程即将上线</span></div>
+      <ul id="cardLines"></ul>
+    </div>
+  </div>
+  <script type="module" src="./src/ar-game/ar-game.js?v=20261011154851"></script>
+</body>
+</html>
