@@ -1,34 +1,37 @@
 // lesson-mode.js — 讲解模式:锁定输入,镜头接管给时间轴 cam.*;字幕/章节/参与门/跳过/回归
 // 复用 lesson-core(magnifier/specimen)+ vr-field(按簇枯黄/虫群/定位圈);埋点走 analytics.track
 // 可选参数(默认保持 VR 行为):
-//   url          时间轴 JSON(默认相对 ./lessons/vr-planthopper.json?v=20261011155356,部署到子路径也能解析)
+//   url          时间轴 JSON(默认相对 ./lessons/vr-planthopper.json?v=20261012100844,部署到子路径也能解析)
 //   onCam        传入后不再直驱相机,改为 onCam(P, snapshot) 回调(AR 侧接软引导)
 //   trackPrefix  埋点事件前缀(默认 'vr',AR 传 'ar')
 //   magScale/specScale  放大镜/标本整体缩放(AR 视距远,可调大)
-import * as THREE from '../../vendor/three.module.js?v=20261011155356';
-import { loadTimeline } from '../lesson-core/timeline.js?v=20261011155356';
-import { buildMagnifier } from '../lesson-core/magnifier.js?v=20261011155356';
-import { buildSpecimen } from '../lesson-core/specimen.js?v=20261011155356';
-import { buildSwarm, buildMarker } from './vr-field.js?v=20261011155356';
-import { track } from '../analytics.js?v=20261011155356';
+import * as THREE from '../../vendor/three.module.js?v=20261012100844';
+import { loadTimeline } from '../lesson-core/timeline.js?v=20261012100844';
+import { buildMagnifier } from '../lesson-core/magnifier.js?v=20261012100844';
+import { buildSpecimen } from '../lesson-core/specimen.js?v=20261012100844';
+import { buildSwarm, buildMarker } from './vr-field.js?v=20261012100844';
+import { track } from '../analytics.js?v=20261012100844';
 
 const BUBBLE_LIFT = 0.8; // 放大镜球心高出稻簇的世界高度(v4 稻簇高 ~0.45,球已缩到 ~0.075 倍)
 
-export async function createLessonMode({ scene, camera, ui, damage, url = './lessons/vr-planthopper.json?v=20261011155356',
-  onCam = null, trackPrefix = 'vr', magScale = 0.075, specScale = 0.16 }) {
+export async function createLessonMode({ scene, camera, ui, damage, url = './lessons/vr-planthopper.json?v=20261012100844',
+  onCam = null, trackPrefix = 'vr', magScale = 0.075, specScale = 0.16, contentFrame = null }) {
   const tl = await loadTimeline(url);
   const trigger = tl.trigger;
   const patches = tl.field.patches;
   const focus = new THREE.Vector3(...tl.focus);
   const specAnchor = new THREE.Vector3(...tl.specimen);
 
+  // contentFrame:内容(放大镜/标本/虫群/定位圈)的父节点。默认挂在 scene(世界坐标,VR/陀螺仪沙盘)。
+  // 图卡模式挂进锚点 holder(模型局部坐标,随卡动+缩放)——世界坐标的相机由 contentFrame.matrixWorld 换算。
+  const contentParent = contentFrame || scene;
   const camAz = Math.atan2(tl.params['cam.px'] - tl.params['cam.tx'], tl.params['cam.pz'] - tl.params['cam.tz']);
   const mag = buildMagnifier({ camAz, waterColor: '#7fb3d9', scale: magScale });
   const spec = buildSpecimen({ camAz, scale: specScale });
   const ev = (name, data) => track(trackPrefix + '_' + name, data);
   const swarm = buildSwarm(patches, 0.13);
   const marker = buildMarker(tl.focus);
-  scene.add(mag.root, spec.root, swarm.mesh, marker.mesh);
+  contentParent.add(mag.root, spec.root, swarm.mesh, marker.mesh);
 
   const state = {
     active: false,
@@ -113,6 +116,20 @@ export async function createLessonMode({ scene, camera, ui, damage, url = './les
     damage.setSpread(patches, trigger.restSpread ?? 0);
   }
 
+  // 图卡模式:内容挂在锚点 holder(局部坐标)下,而 mag/spec 的 update 需要世界坐标相机做 billboard/特征面。
+  // 每帧把世界相机换算进 holder 局部坐标喂给它们,位置/朝向就都对了。
+  const _contentCam = new THREE.PerspectiveCamera();
+  const _m4 = new THREE.Matrix4();
+  const contentCamera = () => {
+    if (!contentFrame) return camera;
+    contentFrame.updateWorldMatrix(true, false);
+    _m4.copy(contentFrame.matrixWorld).invert();
+    _contentCam.position.copy(camera.position).applyMatrix4(_m4);
+    _contentCam.quaternion.copy(camera.quaternion).premultiply(
+      new THREE.Quaternion().setFromRotationMatrix(_m4.extractRotation(new THREE.Matrix4())));
+    return _contentCam;
+  };
+
   // 每帧:推进时钟(遇门停住)、按快照驱动画面
   function update(dt) {
     if (!state.active) return;
@@ -142,13 +159,16 @@ export async function createLessonMode({ scene, camera, ui, damage, url = './les
     damage.setSpread(patches, P['field.spread']);
     swarm.update(P['swarm.arrive'], P['field.spread'], state.T, P['swarm.kill']);
     marker.update(P['marker.on'], state.T);
-    mag.update(P, state.T, camera, focus, BUBBLE_LIFT);
-    spec.update(P, state.T, camera, specAnchor);
+    const cam = contentCamera();
+    mag.update(P, state.T, cam, focus, BUBBLE_LIFT);
+    spec.update(P, state.T, cam, specAnchor);
     ui.update(state.T, P, tl);
   }
 
   return {
-    tl, start, finish, update, seek, pinAt,
+    tl, start, finish, update, seek, pinAt, _contentCam,
+    // 相机方位可能变化(图卡模式挂锚点):更新放大镜/标本朝向
+    setCamAz(az) { mag.setCamAz?.(az); spec.setCamAz?.(az); },
     get active() { return state.active; },
     get waiting() { return state.waiting; },
     get T() { return state.T; }

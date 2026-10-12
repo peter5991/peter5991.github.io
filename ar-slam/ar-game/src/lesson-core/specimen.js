@@ -1,8 +1,8 @@
 // specimen.js — ③ 辨认用的标本台:木圆台 + 放大成虫 + 米粒比例尺 + 特征高亮环
 // 高亮 = 时间轴闸门 × 角度可见度(特征所在面朝向相机才亮)。
-import * as THREE from '../../vendor/three.module.js?v=20261011155356';
-import { toon, outline, textTex } from './toon.js?v=20261011155356';
-import { buildPlanthopper } from './planthopper.js?v=20261011155356';
+import * as THREE from '../../vendor/three.module.js?v=20261012100844';
+import { toon, outline, textTex } from './toon.js?v=20261012100844';
+import { buildPlanthopper } from './planthopper.js?v=20261012100844';
 
 const BUG_S = 6; // 标本体长(世界单位)
 const DISK_R = 4.6;
@@ -62,24 +62,26 @@ export function buildSpecimen({ camAz, scale = 1 }) {
 
   const wp = new THREE.Vector3(), wn = new THREE.Vector3(), toCam = new THREE.Vector3();
 
+  let liveCamAz = camAz; // 相机方位可能变化(图卡模式挂锚点)
   function update(P, T, camera, anchor) {
     const open = P['spec.open'];
     root.visible = open > 0.002;
     if (!root.visible) return;
     root.position.copy(anchor);
     root.scale.setScalar(open);
-    turn.rotation.y = camAz + P['spec.turn'];
+    turn.rotation.y = liveCamAz + P['spec.turn'];
     bug.userData.pose({ stand: 1 }, T);
     const g = P['spec.grain'];
     grain.visible = g > 0.002;
     grain.scale.copy(GRAIN).multiplyScalar(g);
-    grain.position.set(Math.sin(camAz) * DISK_R * 0.8, GRAIN.y * 0.5 * g, Math.cos(camAz) * DISK_R * 0.8);
+    grain.position.set(Math.sin(liveCamAz) * DISK_R * 0.8, GRAIN.y * 0.5 * g, Math.cos(liveCamAz) * DISK_R * 0.8);
     root.updateMatrixWorld();
 
     const pulse = 0.75 + 0.25 * Math.sin(T * 6);
     for (const r of rings) {
       wp.copy(r.at).applyMatrix4(r.f.part ? bug.userData.spurs[1].matrixWorld : bug.matrixWorld);
       wn.copy(r.n).transformDirection(bug.matrixWorld);
+      // camera 由 lesson-mode 换算进 root 的局部坐标系(图卡模式),与 wp 同一坐标系
       toCam.subVectors(camera.position, wp).normalize();
       const face = THREE.MathUtils.smoothstep(wn.dot(toCam), 0.25, 0.65);
       const k = P[r.f.gate] * face;
@@ -91,5 +93,5 @@ export function buildSpecimen({ camAz, scale = 1 }) {
     }
   }
 
-  return { root, update };
+  return { root, update, setCamAz(az) { liveCamAz = az; } };
 }

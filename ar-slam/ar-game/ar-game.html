@@ -55,12 +55,54 @@
     #start.hide { opacity: 0; pointer-events: none; }
     #start .t { font-size: clamp(30px, 8vw, 44px); font-weight: 700; letter-spacing: .14em; }
     #start .s { font-size: 15px; opacity: .8; line-height: 1.8; max-width: 22em; }
+    /* 模式选择 */
+    #modeRow { display: flex; gap: 14px; margin-top: 8px; }
+    .modeBtn {
+      background: rgba(255,255,255,.08); color: #fff; border: 1.5px solid rgba(255,255,255,.25);
+      border-radius: 14px; padding: 14px 20px; cursor: pointer; text-align: center; width: 128px;
+      transition: border-color .2s, background .2s;
+    }
+    .modeBtn .ic { font-size: 26px; display: block; margin-bottom: 6px; }
+    .modeBtn .nm { font-size: 16px; font-weight: 600; display: block; }
+    .modeBtn .ds { font-size: 11px; opacity: .7; display: block; margin-top: 4px; line-height: 1.4; }
+    .modeBtn.on { border-color: #d69e2e; background: rgba(214,158,46,.16); }
     #btnStart {
-      margin-top: 10px; background: #d69e2e; color: #fff; border: none;
+      margin-top: 14px; background: #d69e2e; color: #fff; border: none;
       font-size: 20px; font-weight: 700; padding: 16px 52px; border-radius: 999px;
       box-shadow: 0 4px 0 #a5761c, 0 0 0 6px rgba(214,158,46,.25); cursor: pointer;
     }
     #startErr { font-size: 13px; color: #ffb84d; line-height: 1.6; max-width: 26em; display: none; }
+
+    /* ---------- 图卡模式 ---------- */
+    #cardLayer { position: absolute; inset: 0; display: none; }
+    #cardLayer video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    #cardGuide {
+      position: absolute; left: 50%; top: 14%; transform: translateX(-50%); z-index: 40;
+      background: rgba(20,26,22,.85); color: #fff; text-align: center;
+      padding: 12px 20px; border-radius: 14px; max-width: 84%; display: none;
+    }
+    #cardGuide .big { font-size: 18px; font-weight: 700; }
+    #cardGuide .small { font-size: 13px; opacity: .85; margin-top: 6px; line-height: 1.6; }
+    #cardGuide .show { margin-top: 8px; display: inline-block; background: rgba(255,255,255,.12);
+      border: none; color: #ffd84a; font-size: 13px; padding: 6px 14px; border-radius: 999px; cursor: pointer; }
+    #cardImgWrap {
+      position: absolute; inset: 0; z-index: 30; background: rgba(10,14,10,.94);
+      display: none; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+    }
+    #cardImgWrap img { max-width: 92%; max-height: 70%; border-radius: 8px; }
+    #cardImgWrap .tip { color: #fff; font-size: 14px; }
+    #cardImgWrap button { background: rgba(255,255,255,.14); color: #fff; border: none;
+      padding: 8px 22px; border-radius: 999px; font-size: 14px; cursor: pointer; }
+    .cardmode #cardLayer { display: block; }
+    .cardmode #cardGuide { display: block; }
+    .cardmode.cardlesson #cardGuide { display: none; } /* 讲解中让位给字幕/参与门 */
+    /* MindAR 自带的扫描/加载遮罩是 body 子元素(z-index 大),会盖住我们的引导与按钮。
+       全局隐藏扫描动画(用我们自己的引导/准星),加载遮罩压下且不挡点击 */
+    body > .mindar-ui-scanning { display: none !important; }
+    body > .mindar-ui-overlay { z-index: 1 !important; pointer-events: none !important; }
+    body > .mindar-ui-overlay.hidden { display: none !important; }
+    #cardLayer canvas, #cardLayer video { z-index: 0; }
+    .cardmode #scanHint, .cardmode #reticle, .cardmode #btnCenter, .cardmode #exploreHint { display: none !important; }
 
     /* ---------- 扫描/放置 ---------- */
     #scanHint {
@@ -189,9 +231,32 @@
     <!-- 开始页 -->
     <div id="start">
       <div class="t">稻田沙盘</div>
-      <div class="s">把手机对准桌面，点一下放下一座稻田。<br>拖动转一转，点亮点，听老乡讲稻飞虱。</div>
+      <div class="s" id="startDesc">把手机对准桌面，点一下放下一座稻田。<br>拖动转一转，点亮点，听老乡讲稻飞虱。</div>
+      <div id="modeRow">
+        <button class="modeBtn on" data-mode="gyro">
+          <span class="ic">📱</span><span class="nm">陀螺仪模式</span>
+          <span class="ds">对准桌面点放置<br>拖动转视角</span>
+        </button>
+        <button class="modeBtn" data-mode="card">
+          <span class="ic">🃏</span><span class="nm">图卡模式</span>
+          <span class="ds">扫图卡<br>沙盘贴卡上</span>
+        </button>
+      </div>
       <button id="btnStart">打开摄像头</button>
       <div id="startErr"></div>
+    </div>
+
+    <!-- 图卡模式层(MindAR 自己的 canvas/video 挂这里) -->
+    <div id="cardLayer"></div>
+    <div id="cardGuide">
+      <div class="big" id="cardGuideBig">对准图卡…</div>
+      <div class="small" id="cardGuideSmall">沙盘会出现在卡片上</div>
+      <button class="show" id="btnShowCard">没有卡片？点我看</button>
+    </div>
+    <div id="cardImgWrap">
+      <img src="./ar-card/planthopper-card-v1-gray.png" alt="图卡" id="cardImg">
+      <div class="tip">把这张卡打印出来，或在另一台设备上打开它，用本机摄像头对准</div>
+      <button id="btnCardImgClose">返回</button>
     </div>
 
     <!-- 扫描/放置 -->
@@ -220,6 +285,6 @@
       <ul id="cardLines"></ul>
     </div>
   </div>
-  <script type="module" src="./src/ar-game/ar-game.js?v=20261011155356"></script>
+  <script type="module" src="./src/ar-game/ar-game.js?v=20261012100844"></script>
 </body>
 </html>
