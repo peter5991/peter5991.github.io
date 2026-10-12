@@ -1,7 +1,7 @@
 // placement.js — 放置与长出:扫描(准星跟随画面中心在虚拟桌面 y=0 的落点)
 // → 点击放置(相机平移使落点对齐沙盘原点)→ 沙盘 0→1 back 缓动长出 + 接触阴影
-import * as THREE from '../../vendor/three.module.js?v=20261012103044';
-import { textTex } from '../lesson-core/toon.js?v=20261012103044';
+import * as THREE from '../../vendor/three.module.js?v=20261012103238';
+import { textTex } from '../lesson-core/toon.js?v=20261012103238';
 
 export function createPlacement(scene, camera, root) {
   const DESK_Y = 0; // 虚拟桌面(沙盘底面所在高度)

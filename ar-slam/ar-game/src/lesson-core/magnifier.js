@@ -1,9 +1,9 @@
 // magnifier.js — 放大镜气泡:玻璃球 + 镜框/手柄(朝向观者)+ 光锥连到田里那一株
 // 球内是放大的稻秆基部特写:水面、分蘖、主角飞虱、若虫群、吸汁粒子。
 // 位置每帧跟随被看的那一株。
-import * as THREE from '../../vendor/three.module.js?v=20261012103044';
-import { toon, outline, textTex } from './toon.js?v=20261012103044';
-import { buildPlanthopper } from './planthopper.js?v=20261012103044';
+import * as THREE from '../../vendor/three.module.js?v=20261012103238';
+import { toon, outline, textTex } from './toon.js?v=20261012103238';
+import { buildPlanthopper } from './planthopper.js?v=20261012103238';
 
 const R = 4.2; // 球半径(世界单位)
 const STEM_R = 0.4;

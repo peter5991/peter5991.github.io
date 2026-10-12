@@ -1,5 +1,5 @@
 // info-card.js — 轻量信息卡(DOM):标题 + 大白话要点 + “即将上线”角标;开启时软引导镜头转向该簇
-import { track } from '../analytics.js?v=20261012103044';
+import { track } from '../analytics.js?v=20261012103238';
 
 export function createInfoCard(ui, rig) {
   let current = null;

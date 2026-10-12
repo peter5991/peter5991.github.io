@@ -2,8 +2,8 @@
 // 体坐标:+z = 头向, +y = 背向, 体长 ≈ 1;左右件统一 scale.x = side 镜像,
 // 镜像后绕 y/z 轴的转角需乘 side,绕 x 轴不变。
 // 姿态全部由 pose({ gait, flap, feed, stand }, T) 闭式写入,rest 姿态 = 全参数 0。
-import * as THREE from '../../vendor/three.module.js?v=20261012103044';
-import { toon, outline, textTex } from './toon.js?v=20261012103044';
+import * as THREE from '../../vendor/three.module.js?v=20261012103238';
+import { toon, outline, textTex } from './toon.js?v=20261012103238';
 
 const flat = (g) => { const n = g.toNonIndexed(); n.computeVertexNormals(); return n; };
 

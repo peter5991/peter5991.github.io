@@ -1,7 +1,7 @@
 // hotspots.js — 沙盘热点:复用 vr/hotspot 的脉动光圈+「!」/「✓」,卡片热点用「?」
 // 每帧按相机距离反缩放,保持屏幕上大小恒定;点击 = 屏幕空间最近点判定(触屏友好)
-import * as THREE from '../../vendor/three.module.js?v=20261012103044';
-import { textTex } from '../lesson-core/toon.js?v=20261012103044';
+import * as THREE from '../../vendor/three.module.js?v=20261012103238';
+import { textTex } from '../lesson-core/toon.js?v=20261012103238';
 
 const SCREEN_PX = 0.09;   // 热点在世界中的目标屏幕占比(约 90px@1000px 高)
 const PICK_R = 44;        // 触屏拾取半径(px)
