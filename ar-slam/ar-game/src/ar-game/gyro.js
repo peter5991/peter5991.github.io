@@ -2,8 +2,8 @@
 // 公式同 three DeviceOrientationControls:euler(ZXY alpha,beta,gamma) → 四元数,
 // 再乘 screen-orientation 修正与 -90° X 轴修正(竖屏持机,屏幕朝人)
 // delta() = recenter 基准的逆 × 当前姿态(低通后),交给 ar-rig 叠在轨道朝向上
-import * as THREE from '../../vendor/three.module.js?v=20261012100844';
-import { track } from '../analytics.js?v=20261012100844';
+import * as THREE from '../../vendor/three.module.js?v=20261012103044';
+import { track } from '../analytics.js?v=20261012103044';
 
 const D2R = Math.PI / 180;
 const zee = new THREE.Vector3(0, 0, 1);
