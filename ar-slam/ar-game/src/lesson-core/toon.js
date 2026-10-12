@@ -1,5 +1,5 @@
 // toon.js — 三渲二基础配方(VR 漫游页与讲解内核共用)
-import * as THREE from '../../vendor/three.module.js?v=20261012103431';
+import * as THREE from '../../vendor/three.module.js?v=20261012104101';
 
 // 4 档灰阶渐变图,NearestFilter 硬切分
 const gradData = new Uint8Array([

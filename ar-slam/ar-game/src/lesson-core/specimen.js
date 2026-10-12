@@ -1,8 +1,8 @@
 // specimen.js — ③ 辨认用的标本台:木圆台 + 放大成虫 + 米粒比例尺 + 特征高亮环
 // 高亮 = 时间轴闸门 × 角度可见度(特征所在面朝向相机才亮)。
-import * as THREE from '../../vendor/three.module.js?v=20261012103431';
-import { toon, outline, textTex } from './toon.js?v=20261012103431';
-import { buildPlanthopper } from './planthopper.js?v=20261012103431';
+import * as THREE from '../../vendor/three.module.js?v=20261012104101';
+import { toon, outline, textTex } from './toon.js?v=20261012104101';
+import { buildPlanthopper } from './planthopper.js?v=20261012104101';
 
 const BUG_S = 6; // 标本体长(世界单位)
 const DISK_R = 4.6;

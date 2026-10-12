@@ -1,8 +1,8 @@
 // world.js — VR 漫游页世界:加载 v4 沙盘 GLB + 光照 + 地面/障碍
 // 地面射线目标 = Base(岛体)/Plot(泥与水)/Ridge(田埂)/Bridge(桥面);射线落空 = 岛边,阻止移动
 // 障碍 = House/Tree/Scarecrow/StoneLantern/Stone_Rear/Banner 各取一个 XZ 圆(由包围盒生成)
-import * as THREE from '../../vendor/three.module.js?v=20261012103431';
-import { GLTFLoader } from '../../vendor/GLTFLoader.js?v=20261012103431';
+import * as THREE from '../../vendor/three.module.js?v=20261012104101';
+import { GLTFLoader } from '../../vendor/GLTFLoader.js?v=20261012104101';
 
 export async function loadWorld(scene, url) {
   const gltf = await new GLTFLoader().loadAsync(url);
