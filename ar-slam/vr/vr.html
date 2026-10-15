@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+  <title>AR 农学 · 稻田漫游</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #22303c;
+      font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-user-select: none; user-select: none; touch-action: none; }
+    #app { width: 100%; height: 100%; }
+    #app canvas { display: block; }
+
+    /* ---------- 漫游 HUD ---------- */
+    #prompt {
+      position: fixed; left: 50%; bottom: 26%;
+      transform: translateX(-50%) translateY(8px);
+      background: rgba(30, 40, 34, .88); color: #ffe9b0;
+      padding: 10px 18px; border-radius: 12px; font-size: 15px;
+      opacity: 0; transition: opacity .25s, transform .25s; pointer-events: none;
+      max-width: 76vw; text-align: center; line-height: 1.5;
+    }
+    #prompt.on { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    /* 手机控件(仅触屏显示) */
+    #joystick {
+      position: fixed; left: 22px; bottom: 26px; width: 108px; height: 108px;
+      border-radius: 50%; background: rgba(255, 255, 255, .10);
+      border: 1.5px solid rgba(255, 255, 255, .28);
+      display: none; touch-action: none;
+    }
+    #knob {
+      position: absolute; left: 50%; top: 50%; width: 48px; height: 48px;
+      margin: -24px 0 0 -24px; border-radius: 50%;
+      background: rgba(255, 255, 255, .38);
+    }
+    .btnRound {
+      position: fixed; width: 58px; height: 58px; border-radius: 50%;
+      border: 1.5px solid rgba(255, 255, 255, .3);
+      background: rgba(40, 58, 46, .72); color: #fff;
+      font-size: 13px; display: none; align-items: center; justify-content: center;
+      text-align: center; line-height: 1.3;
+    }
+    .touch #joystick { display: block; }
+    .touch .btnRound { display: flex; }
+    #btnView { right: 22px; bottom: 102px; }
+    #btnInteract {
+      right: 22px; bottom: 28px; width: 66px; height: 66px;
+      background: rgba(214, 158, 46, .88); font-size: 14px; font-weight: 600;
+      opacity: .35;
+    }
+    #btnInteract.show { opacity: 1; box-shadow: 0 0 0 4px rgba(224, 160, 48, .25); }
+    /* 桌面:视角切换按钮也留一个小的 */
+    html:not(.touch) #btnView { display: flex; opacity: .55; }
+
+    /* ---------- 讲解模式 ---------- */
+    #caption {
+      position: fixed; left: 50%; bottom: 15%;
+      transform: translateX(-50%);
+      background: rgba(20, 26, 22, .82); color: #fff;
+      font-size: clamp(17px, 2.6vw, 22px); line-height: 1.5;
+      padding: 12px 22px; border-radius: 12px;
+      max-width: 80vw; text-align: center;
+      opacity: 0; transition: opacity .3s; pointer-events: none;
+    }
+    #caption.on { opacity: 1; }
+
+    #titleCard {
+      position: fixed; left: 50%; top: 38%; transform: translate(-50%, -50%);
+      text-align: center; color: #fff; pointer-events: none; opacity: 0;
+    }
+    #titleCard .t { font-size: clamp(34px, 7vw, 54px); font-weight: 700; letter-spacing: .12em;
+      text-shadow: 0 2px 14px rgba(0,0,0,.45); }
+    #titleCard .s { font-size: clamp(14px, 2.4vw, 18px); opacity: .85; margin-top: 8px; }
+
+    #dayCard {
+      position: fixed; right: 18px; top: 16px;
+      background: rgba(20, 26, 22, .78); color: #ffe9b0;
+      padding: 8px 14px; border-radius: 10px; font-size: 15px; opacity: 0;
+      transition: opacity .3s;
+    }
+
+    /* 讲解控制条 */
+    #lessonBar {
+      position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+      transform: translateX(-50%);
+      display: none; align-items: center; gap: 10px;
+      background: rgba(22, 30, 26, .85); padding: 8px 14px; border-radius: 14px;
+    }
+    .lesson #lessonBar { display: flex; }
+    #chapters { display: flex; gap: 6px; }
+    #chapters button {
+      background: transparent; color: rgba(255,255,255,.65); border: none;
+      font-size: 14px; padding: 6px 8px; border-radius: 8px; cursor: pointer;
+    }
+    #chapters button.on { color: #ffd84a; background: rgba(255, 216, 74, .12); }
+    #time { color: rgba(255,255,255,.6); font-size: 12px; min-width: 74px; text-align: right; }
+    #btnSkip {
+      background: rgba(255,255,255,.12); color: #fff; border: none;
+      padding: 6px 12px; border-radius: 8px; font-size: 13px; cursor: pointer;
+    }
+
+    /* 参与门按钮 */
+    #gateWrap {
+      position: fixed; left: 50%; bottom: 26%;
+      transform: translateX(-50%);
+      display: none; flex-direction: column; align-items: center; gap: 14px;
+    }
+    #gateWrap.on { display: flex; }
+    #gatePrompt {
+      background: rgba(20, 26, 22, .82); color: #fff;
+      font-size: clamp(17px, 2.6vw, 22px); line-height: 1.5;
+      padding: 12px 22px; border-radius: 12px; text-align: center; max-width: 80vw;
+    }
+    #btnGate {
+      background: #d69e2e; color: #fff; border: none;
+      font-size: 19px; font-weight: 700;
+      padding: 16px 44px; border-radius: 999px;
+      box-shadow: 0 4px 0 #a5761c, 0 0 0 6px rgba(214, 158, 46, .25);
+      cursor: pointer; animation: bob 1.2s ease-in-out infinite;
+    }
+    @keyframes bob { 50% { transform: translateY(-4px); } }
+
+    /* 漫游时隐藏讲解元素 */
+    #lessonBar, #gateWrap { z-index: 10; }
+    .lesson #prompt, .lesson #joystick, .lesson .btnRound { display: none !important; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <!-- 漫游 HUD -->
+  <div id="prompt">这片稻子有点不对劲，按 E 看看</div>
+  <div id="joystick"><div id="knob"></div></div>
+  <button class="btnRound" id="btnView">视角</button>
+  <button class="btnRound" id="btnInteract">看看</button>
+
+  <!-- 讲解模式 -->
+  <div id="titleCard"><div class="t">稻飞虱</div><div class="s">水稻病虫害课 · VR 漫游版</div></div>
+  <div id="dayCard">第 <span id="dayNum">1</span> 天</div>
+  <div id="caption"></div>
+  <div id="gateWrap"><div id="gatePrompt"></div><button id="btnGate"></button></div>
+  <div id="lessonBar">
+    <div id="chapters"></div>
+    <div id="time">0:00 / 0:58</div>
+    <button id="btnSkip">跳过</button>
+  </div>
+
+  <script type="module" src="./src/vr/vr.js?v=20261015151645"></script>
+</body>
+</html>

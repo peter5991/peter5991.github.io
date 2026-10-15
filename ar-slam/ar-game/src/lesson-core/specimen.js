@@ -1,8 +1,8 @@
 // specimen.js — ③ 辨认用的标本台:木圆台 + 放大成虫 + 米粒比例尺 + 特征高亮环
 // 高亮 = 时间轴闸门 × 角度可见度(特征所在面朝向相机才亮)。
-import * as THREE from '../../vendor/three.module.js?v=20261012104101';
-import { toon, outline, textTex } from './toon.js?v=20261012104101';
-import { buildPlanthopper } from './planthopper.js?v=20261012104101';
+import * as THREE from '../../vendor/three.module.js?v=20261015151645';
+import { toon, outline, textTex } from './toon.js?v=20261015151645';
+import { buildPlanthopper } from './planthopper.js?v=20261015151645';
 
 const BUG_S = 6; // 标本体长(世界单位)
 const DISK_R = 4.6;
@@ -60,7 +60,7 @@ export function buildSpecimen({ camAz, scale = 1 }) {
     return { f, m, mat, at: new THREE.Vector3(...f.at), n: new THREE.Vector3(...f.n).normalize() };
   });
 
-  const wp = new THREE.Vector3(), wn = new THREE.Vector3(), toCam = new THREE.Vector3();
+  const wp = new THREE.Vector3(), wn = new THREE.Vector3(), toCam = new THREE.Vector3(), fp = new THREE.Vector3(), invP = new THREE.Matrix4();
 
   let liveCamAz = camAz; // 相机方位可能变化(图卡模式挂锚点)
   function update(P, T, camera, anchor) {
@@ -68,7 +68,7 @@ export function buildSpecimen({ camAz, scale = 1 }) {
     root.visible = open > 0.002;
     if (!root.visible) return;
     root.position.copy(anchor);
-    root.scale.setScalar(open);
+    root.scale.setScalar(scale * open); // 构造时的整体缩放 × 展开进度(原先直接写 open,把 scale 覆盖掉了)
     turn.rotation.y = liveCamAz + P['spec.turn'];
     bug.userData.pose({ stand: 1 }, T);
     const g = P['spec.grain'];
@@ -81,8 +81,10 @@ export function buildSpecimen({ camAz, scale = 1 }) {
     for (const r of rings) {
       wp.copy(r.at).applyMatrix4(r.f.part ? bug.userData.spurs[1].matrixWorld : bug.matrixWorld);
       wn.copy(r.n).transformDirection(bug.matrixWorld);
-      // camera 由 lesson-mode 换算进 root 的局部坐标系(图卡模式),与 wp 同一坐标系
-      toCam.subVectors(camera.position, wp).normalize();
+      // camera 由调用方换算进内容父节点的局部坐标系(图卡/视频沙盘);特征点与法线也换到该系再做朝向判断
+      fp.copy(wp);
+      if (root.parent) { invP.copy(root.parent.matrixWorld).invert(); fp.applyMatrix4(invP); wn.transformDirection(invP); }
+      toCam.subVectors(camera.position, fp).normalize();
       const face = THREE.MathUtils.smoothstep(wn.dot(toCam), 0.25, 0.65);
       const k = P[r.f.gate] * face;
       r.m.visible = k > 0.01;

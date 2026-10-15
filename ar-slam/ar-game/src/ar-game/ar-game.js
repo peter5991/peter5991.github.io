@@ -1,18 +1,18 @@
 // ar-game.js — AR 沙盘页主入口:开始页 → 取景(摄像头/静图) → 放置 → 探索 → 讲解/信息卡
 // 状态机:start → scanning → placed(长出) → explore ⇄ lesson / infoCard
 // 复用:vr/world(沙盘+光照)、vr/lesson-mode(讲解内核,onCam 接软引导)、vr-field(田间层)
-import * as THREE from '../../vendor/three.module.js?v=20261012104101';
-import { loadWorld } from '../vr/world.js?v=20261012104101';
-import { buildRiceDamage } from '../vr/vr-field.js?v=20261012104101';
-import { createLessonMode } from '../vr/lesson-mode.js?v=20261012104101';
-import { startPassthrough } from './passthrough.js?v=20261012104101';
-import { createGyro } from './gyro.js?v=20261012104101';
-import { createArRig } from './ar-rig.js?v=20261012104101';
-import { createPlacement } from './placement.js?v=20261012104101';
-import { buildHotspots } from './hotspots.js?v=20261012104101';
-import { createInfoCard } from './info-card.js?v=20261012104101';
-import { createCardMode } from './card-mode.js?v=20261012104101';
-import { track } from '../analytics.js?v=20261012104101';
+import * as THREE from '../../vendor/three.module.js?v=20261015151645';
+import { loadWorld } from '../vr/world.js?v=20261015151645';
+import { buildRiceDamage } from '../vr/vr-field.js?v=20261015151645';
+import { createLessonMode } from '../vr/lesson-mode.js?v=20261015151645';
+import { startPassthrough } from './passthrough.js?v=20261015151645';
+import { createGyro } from './gyro.js?v=20261015151645';
+import { createArRig } from './ar-rig.js?v=20261015151645';
+import { createPlacement } from './placement.js?v=20261015151645';
+import { buildHotspots } from './hotspots.js?v=20261015151645';
+import { createInfoCard } from './info-card.js?v=20261015151645';
+import { createCardMode } from './card-mode.js?v=20261015151645';
+import { track } from '../analytics.js?v=20261015151645';
 
 const $ = (id) => document.getElementById(id);
 
@@ -82,10 +82,10 @@ async function start() {
   // 背景透明:取景画面由 passthrough 的 video/静图提供;无雾(“透过摄像头看”)
   const camera = new THREE.PerspectiveCamera(60, 1, 0.05, 60);
 
-  const world = await loadWorld(scene, './models/paddy-sandbox/paddy-sandbox-v4.quant.glb?v=20261012104101');
+  const world = await loadWorld(scene, './models/paddy-sandbox/paddy-sandbox-v4.quant.glb?v=20261015151645');
   const damage = buildRiceDamage(world.root);
 
-  const spotsCfg = await (await fetch('./lessons/ar-hotspots.json?v=20261012104101')).json();
+  const spotsCfg = await (await fetch('./lessons/ar-hotspots.json?v=20261015151645')).json();
   const spots = buildHotspots(spotsCfg.spots);
   for (const it of spots.items) scene.add(it.root);
 
@@ -297,7 +297,7 @@ async function start() {
   if (q.get('t') !== null && isFinite(+q.get('t'))) {
     // 直达讲解(验收用):跳过开始页与放置
     ui.start.classList.add('hide');
-    ui.camLayer.style.backgroundImage = 'url(./ar-game/desk-bg.jpg?v=20261012104101)';
+    ui.camLayer.style.backgroundImage = 'url(./ar-game/desk-bg.jpg?v=20261015151645)';
     mode = 'lesson';
     place.place();
     rig.setEnabled(true);

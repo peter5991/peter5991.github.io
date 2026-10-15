@@ -1,6 +1,6 @@
 // ar-rig.js — 手持轨道相机:转盘/俯仰/缩放(都是相机位姿变化,沙盘不动)
 // 朝向 = lookAt(pos→target) ∘ 陀螺仪增量;软引导 suggest() 在用户操作后让权 4s
-import * as THREE from '../../vendor/three.module.js?v=20261012104101';
+import * as THREE from '../../vendor/three.module.js?v=20261015151645';
 
 const DEF = { az: 1.3, el: 0.72, dist: 3.3 }; // 初始机位(东北侧俯视,三块田都进画面)
 const LIM = { el: [0.14, 1.35], dist: [0.9, 4.6] };

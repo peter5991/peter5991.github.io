@@ -3,8 +3,8 @@
 //   枯黄 = 整簇材质色乘混(vertexColors 照常起作用),毒化 = 叶尖 fade 差,效果更"病害渐进"
 //   倒伏 = 整簇绕随机方位倾斜下压(真实冒穿:整丛倒下)
 // 虫群/定位圈从原 field-damage.js 移植(换成 v4 坐标)
-import * as THREE from '../../vendor/three.module.js?v=20261012104101';
-import { toon, mulberry32 } from '../lesson-core/toon.js?v=20261012104101';
+import * as THREE from '../../vendor/three.module.js?v=20261015151645';
+import { toon, mulberry32 } from '../lesson-core/toon.js?v=20261015151645';
 
 const YELLOW = new THREE.Color('#d9b24a');
 const BROWN = new THREE.Color('#8b6a3c');

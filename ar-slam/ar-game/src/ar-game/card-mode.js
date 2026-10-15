@@ -2,16 +2,16 @@
 // 与陀螺仪模式解耦:MindAR 用自己的 renderer/scene/camera + 摄像头,挂在 #cardLayer;
 // 沙盘克隆一份挂到锚点(原沙盘在陀螺仪场景里,不能同时做两个父级的子节点)。
 // 单 THREE 实例:vite 的 mindar-three-shim 插件保证 mind-ar 与业务代码同一个 three。
-import * as THREE from '../../vendor/three.module.js?v=20261012104101';
-import { MindARThree } from '../../vendor/mindar-image-three.prod.js?v=20261012104101';
-import { buildRiceDamage } from '../vr/vr-field.js?v=20261012104101';
-import { createLessonMode } from '../vr/lesson-mode.js?v=20261012104101';
-import { textTex } from '../lesson-core/toon.js?v=20261012104101';
-import { track } from '../analytics.js?v=20261012104101';
+import * as THREE from '../../vendor/three.module.js?v=20261015151645';
+import { MindARThree } from '../../vendor/mindar-image-three.prod.js?v=20261015151645';
+import { buildRiceDamage } from '../vr/vr-field.js?v=20261015151645';
+import { createLessonMode } from '../vr/lesson-mode.js?v=20261015151645';
+import { textTex } from '../lesson-core/toon.js?v=20261015151645';
+import { track } from '../analytics.js?v=20261015151645';
 
 const PICK_R = 46; // 热点屏幕拾取半径(px)
 
-// 归一化:沙盘包围盒宽 → 图卡宽 = 1 个单位(MindAR 锚点坐标系),与 src/ar.js?v=20261012104101 同口径
+// 归一化:沙盘包围盒宽 → 图卡宽 = 1 个单位(MindAR 锚点坐标系),与 src/ar.js?v=20261015151645 同口径
 function normalizeToCard(model) {
   const bbox = new THREE.Box3().setFromObject(model);
   const size = bbox.getSize(new THREE.Vector3());
@@ -82,7 +82,7 @@ export function createCardMode({ container, worldSource, spotsCfg, ui }) {
   const mindar = new MindARThree({
     container,
     imageTargetSrc: './ar-card/planthopper-card-v1-gray.mind',
-    missTolerance: 30, // 丢卡容忍帧数(0.5s@60fps),与 src/ar.js?v=20261012104101 一致
+    missTolerance: 30, // 丢卡容忍帧数(0.5s@60fps),与 src/ar.js?v=20261015151645 一致
   });
   const { renderer, scene } = mindar;
 
@@ -133,7 +133,7 @@ export function createCardMode({ container, worldSource, spotsCfg, ui }) {
   let running = false;
   async function start() {
     try {
-      await mindar.start(); // mind-ar 把 getUserMedia 错误吞成 undefined(src/ar.js?v=20261012104101 有同款处理)
+      await mindar.start(); // mind-ar 把 getUserMedia 错误吞成 undefined(src/ar.js?v=20261015151645 有同款处理)
     } catch (err) {
       stopCamera(); // 失败也要放掉摄像头,否则一直占着
       throw err;
